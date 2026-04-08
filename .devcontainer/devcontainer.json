@@ -1,0 +1,38 @@
+// For format details, see https://aka.ms/devcontainer.json
+{
+    "name": "Agentic Sandbox",
+    "build": {
+        "dockerfile": "../Dockerfile",
+        "args": {
+            "TZ": "${localEnv:TZ:Etc/UTC}"
+        }
+    },
+    "containerEnv": {
+        "CLAUDE_CONFIG_DIR": "/home/agent/.claude",
+        "GIT_AUTHOR_NAME": "${localEnv:GIT_AUTHOR_NAME}",
+        "GIT_AUTHOR_EMAIL": "${localEnv:GIT_AUTHOR_EMAIL}",
+        "GIT_COMMITTER_NAME": "${localEnv:GIT_COMMITTER_NAME}",
+        "GIT_COMMITTER_EMAIL": "${localEnv:GIT_COMMITTER_EMAIL}"
+    },
+    "remoteEnv": {
+        "SSH_AUTH_SOCK": ""
+    },
+    "mounts": [
+        "source=agentic-sandbox-claude,target=/home/agent/.claude,type=volume",
+        "source=agentic-sandbox-copilot,target=/home/agent/.copilot,type=volume",
+        "source=agentic-sandbox-vibe,target=/home/agent/.vibe,type=volume",
+        "source=agentic-sandbox-gh,target=/home/agent/.config/gh,type=volume"
+    ],
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "anthropic.claude-code"
+            ],
+            "settings": {
+                "claudeCode.allowDangerouslySkipPermissions": true,
+                "claudeCode.initialPermissionMode": "bypassPermissions",
+                "remote.SSH.enableAgentForwarding": false
+            }
+        }
+    }
+}

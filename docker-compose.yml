@@ -1,0 +1,44 @@
+services:
+  sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        TZ: ${TZ:-Etc/UTC}
+    image: agentic-sandbox:latest
+    container_name: agentic-sandbox
+    stdin_open: true
+    tty: true
+
+    volumes:
+      # Named volumes for isolated, persistent agent config
+      - claude-config:/home/agent/.claude
+      - copilot-config:/home/agent/.copilot
+      - vibe-config:/home/agent/.vibe
+      - gh-config:/home/agent/.config/gh
+
+      # Project directory — set PROJECT_DIR env var or defaults to current dir
+      - ${PROJECT_DIR:-./_project}:/workspace
+
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+      - GITHUB_TOKEN=${SANDBOX_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}
+      - SSH_AUTH_SOCK=
+
+    # Resource limits to prevent runaway agents
+    deploy:
+      resources:
+        limits:
+          memory: 8g
+          cpus: "4"
+
+    # Host networking: container ports accessible directly on host
+    network_mode: host
+
+volumes:
+  claude-config:
+  copilot-config:
+  vibe-config:
+  gh-config:
