@@ -20,6 +20,8 @@ Commands:
   start <project-dir>    Start a new sandbox with the given project mounted
   shell [container]      Open a shell in a running sandbox (default: agentic-sandbox)
   stop  [container]      Stop a running sandbox
+  remove <container>     Remove a sandbox container (volumes preserved)
+  reset-config           Wipe all agent config volumes (auth, settings, skills)
   list                   List running sandboxes
   build                  Rebuild the sandbox image
   extend <dockerfile>    Build a custom image extending the base sandbox
@@ -93,10 +95,18 @@ cmd_start() {
 
     ensure_image
 
-    # Stop existing container with same name if running
+    # If a container with this name already exists, resume it if stopped, or warn if running
     if docker ps -a --format '{{.Names}}' | grep -q "^${container_name}$"; then
-        echo "Removing existing container '$container_name'..."
-        docker rm -f "$container_name" &>/dev/null
+        if docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
+            echo "Sandbox '$container_name' is already running."
+            echo "  Attach with: agent-sandbox shell $container_name"
+            return
+        fi
+        echo "Resuming stopped sandbox '$container_name'..."
+        docker start "$container_name" >/dev/null
+        echo "Sandbox running. Attach with:"
+        echo "  agent-sandbox shell $container_name"
+        return
     fi
 
     local project_name
@@ -176,7 +186,53 @@ cmd_shell() {
 cmd_stop() {
     local container_name="${1:-agentic-sandbox}"
     echo "Stopping '$container_name'..."
-    docker stop "$container_name" && docker rm "$container_name"
+    docker stop "$container_name" >/dev/null
+    echo "Done. (Container preserved — use 'start' to resume, or 'remove' to delete.)"
+}
+
+cmd_remove() {
+    local container_name="${1:-}"
+    if [[ -z "$container_name" ]]; then
+        echo "Error: container name required"
+        echo "Usage: agent-sandbox remove <container-name>"
+        exit 1
+    fi
+    if ! docker ps -a --format '{{.Names}}' | grep -q "^${container_name}$"; then
+        echo "Error: container '$container_name' does not exist"
+        exit 1
+    fi
+    echo "Removing '$container_name'..."
+    docker rm -f "$container_name" &>/dev/null
+    echo "Done. (Named volumes preserved — use 'reset-config' to wipe them.)"
+}
+
+cmd_reset_config() {
+    echo "This will delete all agent config volumes:"
+    echo "  - ${VOLUME_PREFIX}-claude   (Claude Code auth, settings, skills)"
+    echo "  - ${VOLUME_PREFIX}-copilot  (Copilot config)"
+    echo "  - ${VOLUME_PREFIX}-vibe     (Vibe config)"
+    echo "  - ${VOLUME_PREFIX}-gh       (GitHub CLI auth)"
+    echo ""
+    echo "Any running sandboxes will be stopped first."
+    read -rp "Continue? [y/N] " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Cancelled."
+        return
+    fi
+
+    # Stop any running sandboxes
+    local running
+    running=$(docker ps --filter "label=agentic-sandbox=true" -q)
+    if [[ -n "$running" ]]; then
+        echo "Stopping running sandboxes..."
+        docker rm -f $running &>/dev/null
+    fi
+
+    for vol in claude copilot vibe gh; do
+        docker volume rm "${VOLUME_PREFIX}-${vol}" 2>/dev/null \
+            && echo "  Removed ${VOLUME_PREFIX}-${vol}" \
+            || echo "  ${VOLUME_PREFIX}-${vol} (not present)"
+    done
     echo "Done."
 }
 
@@ -369,6 +425,8 @@ case "${1:-}" in
     start)       shift; cmd_start "$@" ;;
     shell)       shift; cmd_shell "$@" ;;
     stop)        shift; cmd_stop "$@" ;;
+    remove|rm)   shift; cmd_remove "$@" ;;
+    reset-config) shift; cmd_reset_config "$@" ;;
     list)        shift; cmd_list "$@" ;;
     build)       shift; cmd_build "$@" ;;
     extend)      shift; cmd_extend "$@" ;;
