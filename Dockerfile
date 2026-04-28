@@ -79,6 +79,17 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 # Install common global npm tools
 RUN npm install -g typescript ts-node pnpm yarn
 
+# Playwright + chromium with system deps.
+# `playwright install --with-deps` handles Ubuntu 24.04's renamed packages
+# (libcups2t64, etc.) that direct apt-get installs would miss.
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+RUN pip install playwright \
+    && mkdir -p /opt/playwright-browsers \
+    && playwright install --with-deps chromium \
+    && chmod -R a+rX /opt/playwright-browsers \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Environment
 ENV TZ="$TZ"
 ENV DEVCONTAINER=true
