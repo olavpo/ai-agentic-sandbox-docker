@@ -1,3 +1,4 @@
-_project/
 .env
-/.claude
+.DS_Store
+.claude/
+.srt-settings.json
