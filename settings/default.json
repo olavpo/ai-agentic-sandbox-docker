@@ -1,5 +1,5 @@
 {
-  "passEnv": [
+  "_passEnv": [
     "ANTHROPIC_API_KEY",
     "GITHUB_TOKEN",
     "GIT_AUTHOR_NAME",
@@ -7,48 +7,55 @@
     "GIT_COMMITTER_NAME",
     "GIT_COMMITTER_EMAIL"
   ],
-  "allowedDomains": [
-    "api.anthropic.com",
-    "*.anthropic.com",
-    "github.com",
-    "*.github.com",
-    "objects.githubusercontent.com",
-    "raw.githubusercontent.com",
-    "codeload.github.com",
-    "api.github.com",
-    "registry.npmjs.org",
-    "*.npmjs.org",
-    "registry.yarnpkg.com",
-    "pypi.org",
-    "files.pythonhosted.org",
-    "deb.nodesource.com",
-    "deb.debian.org",
-    "playwright.azureedge.net",
-    "cdn.playwright.dev"
-  ],
-  "allowWrite": [
-    "./",
-    "/tmp",
-    "~/.claude",
-    "~/.claude.json",
-    "~/.cache"
-  ],
-  "denyWrite": [
-    "./.srt-settings.json",
-    "./.claude/settings.json",
-    "./.claude/settings.local.json"
-  ],
-  "denyRead": [
-    "~/"
-  ],
-  "allowRead": [
-    ".",
-    "/tmp",
-    "~/.claude",
-    "~/.claude.json",
-    "~/.cache",
-    "~/Downloads",
-    "~/Desktop",
-    "~/Repos/ai-skills"
-  ]
+  "network": {
+    "allowedDomains": [
+      "api.anthropic.com",
+      "*.anthropic.com",
+      "github.com",
+      "*.github.com",
+      "objects.githubusercontent.com",
+      "raw.githubusercontent.com",
+      "codeload.github.com",
+      "api.github.com",
+      "registry.npmjs.org",
+      "*.npmjs.org",
+      "registry.yarnpkg.com",
+      "pypi.org",
+      "files.pythonhosted.org",
+      "deb.nodesource.com",
+      "deb.debian.org",
+      "playwright.azureedge.net",
+      "cdn.playwright.dev"
+    ],
+    "deniedDomains": [],
+    "allowUnixSockets": [],
+    "allowLocalBinding": true
+  },
+  "filesystem": {
+    "allowWrite": [
+      "./",
+      "/tmp",
+      "~/.claude",
+      "~/.claude.json",
+      "~/.cache"
+    ],
+    "denyWrite": [
+      "./.srt-settings.json",
+      "./.claude/settings.json",
+      "./.claude/settings.local.json"
+    ],
+    "denyRead": [
+      "~/"
+    ],
+    "allowRead": [
+      ".",
+      "/tmp",
+      "~/.claude",
+      "~/.claude.json",
+      "~/.cache",
+      "~/Downloads",
+      "~/Desktop",
+      "~/Repos/ai-skills"
+    ]
+  }
 }

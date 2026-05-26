@@ -101,9 +101,9 @@ build_env_args() {
         env_args+=("$var=${!var}")
     done
 
-    # Opt-in passthrough from settings.passEnv
+    # Opt-in passthrough from settings._passEnv (wrapper-only key)
     local pass_env
-    if pass_env=$(jq -r '.passEnv[]?' "$settings_file" 2>/dev/null); then
+    if pass_env=$(jq -r '._passEnv[]?' "$settings_file" 2>/dev/null); then
         while IFS= read -r name; do
             [[ -z "$name" ]] && continue
 
@@ -125,8 +125,8 @@ build_env_args() {
     printf '%s\n' "${env_args[@]}"
 }
 
-# Inject the resolved settings file path into its own denyWrite list,
-# write to a temp file, and return that temp file's path.
+# Strip wrapper-only keys (those prefixed with _) and inject the resolved
+# settings file path into filesystem.denyWrite. Returns the temp file path.
 # This protects the policy from self-edit regardless of where it lives.
 prepare_settings_file() {
     local source_file="$1"
@@ -136,10 +136,12 @@ prepare_settings_file() {
     local tmp
     tmp=$(mktemp -t agent-sandbox-settings.XXXXXX.json)
 
-    # Ensure denyWrite array exists and contains the resolved settings path
-    jq --arg path "$resolved_abs" \
-       '.denyWrite = ((.denyWrite // []) + [$path] | unique)' \
-       "$source_file" > "$tmp"
+    # 1. Drop wrapper-only top-level keys (anything starting with _)
+    # 2. Ensure filesystem.denyWrite contains the resolved settings path
+    jq --arg path "$resolved_abs" '
+        with_entries(select(.key | startswith("_") | not))
+        | .filesystem.denyWrite = ((.filesystem.denyWrite // []) + [$path] | unique)
+    ' "$source_file" > "$tmp"
 
     echo "$tmp"
 }
@@ -287,11 +289,13 @@ prepared_settings=$(prepare_settings_file "$settings_file")
 # Clean up the temp settings file on exit
 trap "rm -f '$prepared_settings'" EXIT
 
-# Build the scrubbed env
+# Build the scrubbed env (read _passEnv from the original, not the stripped temp)
 declare -a env_pairs=()
 while IFS= read -r pair; do
     [[ -n "$pair" ]] && env_pairs+=("$pair")
-done < <(build_env_args "$prepared_settings")
+done < <(build_env_args "$settings_file")
 
-# Hand off to srt with -i to clear env, then pass only the allowlisted vars
-exec env -i "${env_pairs[@]}" srt --settings "$prepared_settings" "${cmd_args[@]}"
+# Hand off to srt with -i to clear env, then pass only the allowlisted vars.
+# The `--` separator prevents srt from intercepting flags meant for the
+# wrapped command (e.g. `claude --version` would otherwise hit `srt --version`).
+exec env -i "${env_pairs[@]}" srt --settings "$prepared_settings" -- "${cmd_args[@]}"
