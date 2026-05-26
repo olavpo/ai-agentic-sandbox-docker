@@ -149,17 +149,26 @@ cmd_start() {
 
     # Wait for agents to be installed
     echo -n "Installing agents..."
-    local max_wait=120
+    local max_wait=300
     local waited=0
+    local installed=false
     while [[ $waited -lt $max_wait ]]; do
         if docker exec "$container_name" bash -l -c "command -v claude" &>/dev/null; then
+            installed=true
             break
         fi
         echo -n "."
         sleep 2
         waited=$((waited + 2))
     done
-    echo " done."
+    if $installed; then
+        echo " done."
+    else
+        echo " timeout."
+        echo "Install may still be running. Check with:"
+        echo "  docker logs $container_name"
+        echo "  docker exec $container_name ls /home/agent/.local/bin"
+    fi
 
     echo ""
     echo "Sandbox ready. Attach with:"

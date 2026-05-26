@@ -12,7 +12,11 @@ export SSH_AUTH_SOCK=""
 
 if ! command -v claude &>/dev/null; then
     echo "[entrypoint] Installing Claude Code..."
-    curl -fsSL https://claude.ai/install.sh | bash
+    if ! curl -fsSL https://claude.ai/install.sh | bash; then
+        echo "[entrypoint] Native installer failed, trying npm fallback..."
+        sudo npm install -g @anthropic-ai/claude-code || \
+            echo "[entrypoint] WARNING: Claude Code install failed. Run manually: npm install -g @anthropic-ai/claude-code"
+    fi
 fi
 
 if ! command -v github-copilot &>/dev/null && command -v npm &>/dev/null; then
