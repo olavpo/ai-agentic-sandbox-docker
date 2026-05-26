@@ -1,6 +1,5 @@
 {
   "_passEnv": [
-    "ANTHROPIC_API_KEY",
     "GITHUB_TOKEN",
     "GIT_AUTHOR_NAME",
     "GIT_AUTHOR_EMAIL",
@@ -25,7 +24,9 @@
       "deb.nodesource.com",
       "deb.debian.org",
       "playwright.azureedge.net",
-      "cdn.playwright.dev"
+      "cdn.playwright.dev",
+      "dhis2.org",
+      "*.dhis2.org"
     ],
     "deniedDomains": [],
     "allowUnixSockets": [],
