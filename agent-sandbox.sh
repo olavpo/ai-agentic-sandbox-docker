@@ -29,6 +29,9 @@ Commands:
 
 Options for `start`:
   -n, --name NAME        Container name (default: agentic-sandbox)
+  --agent NAME           Which agent to install/mount: claude (default), copilot,
+                         vibe, or all. Only the chosen agent's config volume is
+                         mounted; only that agent is installed at first start.
   -e, --env KEY=VAL      Pass extra environment variable (repeatable)
   --network NAME         Attach to a Docker network (repeatable; e.g. --network dev-net
                          to reach a DHIS2 container by name)
@@ -40,6 +43,8 @@ Options for `start`:
 
 Examples:
   agent-sandbox start ~/projects/my-app
+  agent-sandbox start ~/projects/my-app --agent vibe       # only Mistral Vibe
+  agent-sandbox start ~/projects/my-app --agent all        # all three agents
   agent-sandbox start ~/projects/my-app -n my-sandbox -e MY_VAR=hello
   agent-sandbox start ~/projects/dhis2-app --network dev-net
   agent-sandbox start ~/projects/my-app -p 5173:5173
@@ -92,6 +97,7 @@ cmd_start() {
     local extra_networks=()
     local extra_ports=()
     local host_network=false
+    local agent_choice="claude"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -101,6 +107,14 @@ cmd_start() {
             -p|--port|--publish) extra_ports+=(-p "$2"); shift 2 ;;
             --host-network) host_network=true; shift ;;
             --no-config) mount_config=false; shift ;;
+            --agent)
+                agent_choice="$2"
+                case "$agent_choice" in
+                    claude|copilot|vibe|all) ;;
+                    *) echo "Error: --agent must be one of: claude, copilot, vibe, all" >&2; exit 1 ;;
+                esac
+                shift 2
+                ;;
             -*) echo "Unknown option: $1"; usage; exit 1 ;;
             *)
                 if [[ -z "$project_dir" ]]; then
@@ -146,18 +160,29 @@ cmd_start() {
     local volumes=(-v "$project_dir:/$project_name")
 
     if $mount_config; then
-        # Named volumes for isolated, persistent agent config
-        volumes+=(
-            -v "${VOLUME_PREFIX}-claude:/home/agent/.claude"
-            -v "${VOLUME_PREFIX}-copilot:/home/agent/.copilot"
-            -v "${VOLUME_PREFIX}-vibe:/home/agent/.vibe"
-            -v "${VOLUME_PREFIX}-gh:/home/agent/.config/gh"
-        )
+        # gh config is generic (git auth); always mount it.
+        volumes+=(-v "${VOLUME_PREFIX}-gh:/home/agent/.config/gh")
 
+        # Mount only the chosen agent's config volume. Each is a named volume
+        # so the auth/state persists across sandbox restarts even though it's
+        # only mounted in sessions that need it.
+        case "$agent_choice" in
+            claude|all) volumes+=(-v "${VOLUME_PREFIX}-claude:/home/agent/.claude") ;;
+        esac
+        case "$agent_choice" in
+            copilot|all) volumes+=(-v "${VOLUME_PREFIX}-copilot:/home/agent/.copilot") ;;
+        esac
+        case "$agent_choice" in
+            vibe|all) volumes+=(-v "${VOLUME_PREFIX}-vibe:/home/agent/.vibe") ;;
+        esac
     fi
 
     # Pass through API keys if set on host
-    local env_args=(-e "PROJECT_NAME=$project_name" -e "SSH_AUTH_SOCK=")
+    local env_args=(
+        -e "PROJECT_NAME=$project_name"
+        -e "SSH_AUTH_SOCK="
+        -e "AGENT_CHOICE=$agent_choice"
+    )
     [[ -n "${ANTHROPIC_API_KEY:-}" ]] && env_args+=(-e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
     [[ -n "${OPENAI_API_KEY:-}" ]]    && env_args+=(-e "OPENAI_API_KEY=$OPENAI_API_KEY")
     [[ -n "${MISTRAL_API_KEY:-}" ]]   && env_args+=(-e "MISTRAL_API_KEY=$MISTRAL_API_KEY")
@@ -201,6 +226,7 @@ cmd_start() {
 
     echo "Starting sandbox '$container_name'..."
     echo "  Project: $project_dir → /$project_name"
+    echo "  Agent: $agent_choice"
     $mount_config && echo "  Agent configs: named volumes (isolated)"
     if $host_network; then
         echo "  Network: host (firewall disabled)"
@@ -234,13 +260,21 @@ cmd_start() {
         done
     fi
 
-    # Wait for agents to be installed
-    echo -n "Installing agents..."
+    # Wait for the chosen agent to be installed. The entrypoint installs
+    # whichever agent matches AGENT_CHOICE; we wait for its binary on PATH.
+    local check_bin
+    case "$agent_choice" in
+        claude|all) check_bin="claude" ;;
+        copilot)    check_bin="copilot" ;;
+        vibe)       check_bin="vibe" ;;
+        *)          check_bin="claude" ;;
+    esac
+    echo -n "Installing agent ($agent_choice)..."
     local max_wait=300
     local waited=0
     local installed=false
     while [[ $waited -lt $max_wait ]]; do
-        if docker exec "$container_name" bash -l -c "command -v claude" &>/dev/null; then
+        if docker exec "$container_name" bash -l -c "command -v $check_bin" &>/dev/null; then
             installed=true
             break
         fi

@@ -94,26 +94,42 @@ You run as the `agent` user with passwordless `sudo` for system changes inside t
 <!-- END agent-sandbox -->
 EOF
 
-# --- Install agents on first run ---
-# Installed into the named volume so they persist across container recreations.
-if ! command -v claude &>/dev/null; then
-    echo "[entrypoint] Installing Claude Code..."
-    if ! curl -fsSL https://claude.ai/install.sh | bash; then
-        echo "[entrypoint] Native installer failed, trying npm fallback..."
-        sudo npm install -g @anthropic-ai/claude-code || \
-            echo "[entrypoint] WARNING: Claude Code install failed. Run manually: npm install -g @anthropic-ai/claude-code"
-    fi
-fi
+# --- Install the chosen agent(s) on first run ---
+# agent-sandbox.sh sets AGENT_CHOICE to one of: claude (default), copilot,
+# vibe, all. The matching named volume is also mounted at /home/agent/.<agent>
+# so installs persist across container recreations.
+AGENT_CHOICE="${AGENT_CHOICE:-claude}"
 
-if ! command -v github-copilot &>/dev/null && command -v npm &>/dev/null; then
-    echo "[entrypoint] Installing GitHub Copilot CLI..."
-    sudo npm install -g @github/copilot
-fi
+case "$AGENT_CHOICE" in
+    claude|all)
+        if ! command -v claude &>/dev/null; then
+            echo "[entrypoint] Installing Claude Code..."
+            if ! curl -fsSL https://claude.ai/install.sh | bash; then
+                echo "[entrypoint] Native installer failed, trying npm fallback..."
+                sudo npm install -g @anthropic-ai/claude-code \
+                    || echo "[entrypoint] WARNING: Claude Code install failed."
+            fi
+        fi
+        ;;
+esac
 
-if ! command -v mistral-vibe &>/dev/null && command -v uv &>/dev/null; then
-    echo "[entrypoint] Installing Mistral Vibe..."
-    uv tool install mistral-vibe
-fi
+case "$AGENT_CHOICE" in
+    copilot|all)
+        if ! command -v copilot &>/dev/null && command -v npm &>/dev/null; then
+            echo "[entrypoint] Installing GitHub Copilot CLI..."
+            sudo npm install -g @github/copilot
+        fi
+        ;;
+esac
+
+case "$AGENT_CHOICE" in
+    vibe|all)
+        if ! command -v vibe &>/dev/null && command -v uv &>/dev/null; then
+            echo "[entrypoint] Installing Mistral Vibe..."
+            uv tool install mistral-vibe
+        fi
+        ;;
+esac
 
 # --- Git HTTPS auth ---
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then

@@ -67,12 +67,26 @@ Commands:
 
 Options (for `start`):
   -n, --name <name>         Custom container name
+  --agent <name>            claude (default), copilot, vibe, or all
   -e, --env <VAR=value>     Pass extra environment variables
   --network <name>          Attach to a Docker network (repeatable)
   -p, --port HOST:CONT      Publish an additional port (repeatable)
   --host-network            Opt out of bridge+firewall (legacy mode)
   --no-config               Skip mounting agent config volumes
 ```
+
+## Choosing an agent
+
+`--agent NAME` controls which AI coding agent gets installed and which config volume gets mounted. The image bundles the runtimes for all three (Python+uv, Node.js, npm), but only the chosen agent is actually installed at first container start and only its config volume is mounted.
+
+| Agent | Install | Config volume mounted | Notes |
+|---|---|---|---|
+| `claude` (default) | `curl https://claude.ai/install.sh \| bash`, npm fallback | `agentic-sandbox-claude` → `~/.claude` | Default; most uses |
+| `copilot` | `npm install -g @github/copilot` | `agentic-sandbox-copilot` → `~/.copilot` | GitHub Copilot CLI |
+| `vibe` | `uv tool install mistral-vibe` | `agentic-sandbox-vibe` → `~/.vibe` | Mistral Vibe |
+| `all` | All three | All three | Backward-compat behavior |
+
+Each agent's auth/state lives in its named volume, so logging in once persists across all `--agent <same>` sandboxes. Switching agents between sessions doesn't lose state for the others — their volumes stay intact, just not mounted.
 
 ## Networking and host-visible ports
 
@@ -118,13 +132,13 @@ agent-sandbox start ~/Repos/my-app --host-network
 
 ## Agent Authentication
 
-All three agents store auth in shared named Docker volumes. Log in once from any sandbox and it persists across all subsequent sandboxes.
+Each agent's auth lives in its named Docker volume. Log in once from any sandbox using that agent and it persists across all subsequent sandboxes with the same `--agent` choice.
 
-| Agent | Login command | Config volume |
-|---|---|---|
-| Claude Code | `claude login` | `agentic-sandbox-claude` |
-| GitHub Copilot | `gh auth login` | `agentic-sandbox-copilot` |
-| Mistral Vibe | `MISTRAL_API_KEY` in `.env` | `agentic-sandbox-vibe` |
+| Agent | `--agent` | Login command | Config volume |
+|---|---|---|---|
+| Claude Code | `claude` (default) | `claude login` | `agentic-sandbox-claude` |
+| GitHub Copilot | `copilot` | `copilot` then follow prompts | `agentic-sandbox-copilot` |
+| Mistral Vibe | `vibe` | `MISTRAL_API_KEY` in `.env` | `agentic-sandbox-vibe` |
 
 ## GitHub Token
 
