@@ -1,301 +1,445 @@
 #!/usr/bin/env bash
-# agent-sandbox: wraps a command with sandbox-runtime (srt) using a resolved
-# settings file. Default command is `claude`.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}")")" && pwd)"
-BUNDLED_DEFAULT="$SCRIPT_DIR/settings/default.json"
-PROFILES_DIR="$SCRIPT_DIR/settings"
+IMAGE_NAME="agentic-sandbox:latest"
+VOLUME_PREFIX="agentic-sandbox"
+
+# Load .env file if present (won't override existing env vars)
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+    set -a
+    source "$SCRIPT_DIR/.env"
+    set +a
+fi
 
 usage() {
     cat <<'USAGE'
-Usage: agent-sandbox [options] [COMMAND...]
+Usage: agent-sandbox <command> [options]
 
-Wraps COMMAND with sandbox-runtime using a resolved settings file.
-With no COMMAND, launches `claude`.
+Commands:
+  start <project-dir>    Start a new sandbox with the given project mounted
+  shell [container]      Open a shell in a running sandbox (default: agentic-sandbox)
+  stop  [container]      Stop a running sandbox
+  remove <container>     Remove a sandbox container (volumes preserved)
+  reset-config           Wipe all agent config volumes (auth, settings, skills)
+  list                   List running sandboxes
+  build                  Rebuild the sandbox image
+  extend <dockerfile>    Build a custom image extending the base sandbox
+  sync-skills [container] [push|pull]  Sync skills between host and container
 
 Options:
-  --settings PATH     Use a specific settings file (overrides resolution).
-  --profile NAME      Use bundled profile <repo>/settings/NAME.json
-                      (e.g. --profile strict).
-  -h, --help          Show this help.
-
-Subcommands (no settings resolution):
-  init [--strict]     Copy default (or strict) profile to ./.srt-settings.json
-  status              Print resolved settings path and final policy
-  doctor              Check that `srt` is installed and bundled defaults exist
-
-Settings resolution order (first match wins):
-  1. --settings PATH
-  2. --profile NAME  -> <repo>/settings/NAME.json
-  3. ./.srt-settings.json
-  4. ~/.srt-settings.json
-  5. <repo>/settings/default.json (bundled)
+  -n, --name NAME        Container name (default: agentic-sandbox)
+  -e, --env KEY=VAL      Pass extra environment variable (repeatable)
+  --no-config            Don't mount agent config directories
 
 Examples:
-  agent-sandbox                          # launch claude with resolved settings
-  agent-sandbox bash                     # wrap a shell instead
-  agent-sandbox --profile strict         # strict allowlist
-  agent-sandbox --settings ./mine.json   # explicit settings file
-  agent-sandbox init                     # seed ./.srt-settings.json
-  agent-sandbox status                   # show what's in effect here
+  agent-sandbox start ~/projects/my-app
+  agent-sandbox start ~/projects/my-app -n my-sandbox -e MY_VAR=hello
+  agent-sandbox shell
+  agent-sandbox shell my-sandbox
+  agent-sandbox stop
+  agent-sandbox extend ./my-extensions.Dockerfile
+  agent-sandbox sync-skills              # interactive: show diff, choose direction
+  agent-sandbox sync-skills push         # push host skills to any running sandbox
+  agent-sandbox sync-skills pull         # pull container skills to host
+  agent-sandbox sync-skills my-sandbox push  # target a specific container
 USAGE
 }
 
-resolve_settings() {
-    local explicit_settings="${1:-}"
-    local profile="${2:-}"
-
-    if [[ -n "$explicit_settings" ]]; then
-        if [[ ! -f "$explicit_settings" ]]; then
-            echo "Error: settings file not found: $explicit_settings" >&2
-            exit 1
-        fi
-        echo "$explicit_settings"
-        return
+ensure_image() {
+    if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
+        echo "Building sandbox image..."
+        docker build -t "$IMAGE_NAME" "$SCRIPT_DIR"
     fi
-
-    if [[ -n "$profile" ]]; then
-        local profile_path="$PROFILES_DIR/${profile}.json"
-        if [[ ! -f "$profile_path" ]]; then
-            echo "Error: profile '$profile' not found at $profile_path" >&2
-            exit 1
-        fi
-        echo "$profile_path"
-        return
-    fi
-
-    if [[ -f "./.srt-settings.json" ]]; then
-        echo "$(pwd)/.srt-settings.json"
-        return
-    fi
-
-    if [[ -f "$HOME/.srt-settings.json" ]]; then
-        echo "$HOME/.srt-settings.json"
-        return
-    fi
-
-    if [[ ! -f "$BUNDLED_DEFAULT" ]]; then
-        echo "Error: bundled default settings missing at $BUNDLED_DEFAULT" >&2
-        exit 1
-    fi
-    echo "$BUNDLED_DEFAULT"
 }
 
-# Build env-passthrough args. Reads passEnv from the resolved settings JSON.
-# Always passes a known-safe baseline. Returns a list of NAME=VALUE pairs
-# suitable for `env -i ... command`.
-build_env_args() {
-    local settings_file="$1"
-    local -a env_args=()
+cmd_build() {
+    echo "Building sandbox image..."
+    docker build -t "$IMAGE_NAME" "$SCRIPT_DIR"
+}
 
-    # Always-allowed baseline
-    local var
-    for var in HOME USER PATH SHELL TERM LANG TZ PWD OLDPWD; do
-        if [[ -n "${!var:-}" ]]; then
-            env_args+=("$var=${!var}")
-        fi
-    done
-    # LC_* prefix
-    for var in $(env | grep '^LC_' | cut -d= -f1); do
-        env_args+=("$var=${!var}")
-    done
+cmd_start() {
+    local project_dir=""
+    local container_name="agentic-sandbox"
+    local extra_envs=()
+    local mount_config=true
 
-    # Opt-in passthrough from settings._passEnv (wrapper-only key)
-    local pass_env
-    if pass_env=$(jq -r '._passEnv[]?' "$settings_file" 2>/dev/null); then
-        while IFS= read -r name; do
-            [[ -z "$name" ]] && continue
-
-            # Special case: SANDBOX_GITHUB_TOKEN takes priority over GITHUB_TOKEN
-            if [[ "$name" == "GITHUB_TOKEN" ]]; then
-                local token="${SANDBOX_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
-                if [[ -n "$token" ]]; then
-                    env_args+=("GITHUB_TOKEN=$token")
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -n|--name) container_name="$2"; shift 2 ;;
+            -e|--env) extra_envs+=(-e "$2"); shift 2 ;;
+            --no-config) mount_config=false; shift ;;
+            -*) echo "Unknown option: $1"; usage; exit 1 ;;
+            *)
+                if [[ -z "$project_dir" ]]; then
+                    project_dir="$1"
+                elif [[ "$container_name" == "agentic-sandbox" ]]; then
+                    container_name="$1"
                 fi
-                continue
-            fi
+                shift ;;
+        esac
+    done
 
-            if [[ -n "${!name:-}" ]]; then
-                env_args+=("$name=${!name}")
-            fi
-        done <<< "$pass_env"
-    fi
-
-    printf '%s\n' "${env_args[@]}"
-}
-
-# Strip wrapper-only keys (those prefixed with _) and inject the resolved
-# settings file path into filesystem.denyWrite. Returns the temp file path.
-# This protects the policy from self-edit regardless of where it lives.
-prepare_settings_file() {
-    local source_file="$1"
-    local resolved_abs
-    resolved_abs="$(cd "$(dirname "$source_file")" && pwd)/$(basename "$source_file")"
-
-    local tmp
-    tmp=$(mktemp -t agent-sandbox-settings.XXXXXX.json)
-
-    # 1. Drop wrapper-only top-level keys (anything starting with _)
-    # 2. Ensure filesystem.denyWrite contains the resolved settings path
-    jq --arg path "$resolved_abs" '
-        with_entries(select(.key | startswith("_") | not))
-        | .filesystem.denyWrite = ((.filesystem.denyWrite // []) + [$path] | unique)
-    ' "$source_file" > "$tmp"
-
-    echo "$tmp"
-}
-
-require_jq() {
-    if ! command -v jq &>/dev/null; then
-        echo "Error: jq is required but not installed." >&2
-        echo "Install with: brew install jq" >&2
-        exit 1
-    fi
-}
-
-require_srt() {
-    if ! command -v srt &>/dev/null; then
-        echo "Error: srt (sandbox-runtime) is not installed." >&2
-        echo "Install with: npm install -g @anthropic-ai/sandbox-runtime" >&2
-        exit 1
-    fi
-}
-
-cmd_init() {
-    local profile="default"
-    if [[ "${1:-}" == "--strict" ]]; then
-        profile="strict"
-    fi
-    local src="$PROFILES_DIR/${profile}.json"
-    if [[ ! -f "$src" ]]; then
-        echo "Error: bundled profile not found: $src" >&2
-        exit 1
-    fi
-    if [[ -f "./.srt-settings.json" ]]; then
-        echo "./.srt-settings.json already exists. Refusing to overwrite." >&2
-        exit 1
-    fi
-    cp "$src" "./.srt-settings.json"
-    echo "Created ./.srt-settings.json from $profile profile."
-    echo "Edit to customize allowedDomains / allowRead / allowWrite for this project."
-}
-
-cmd_status() {
-    require_jq
-    local settings_file
-    settings_file=$(resolve_settings "$@")
-    echo "Resolved settings file: $settings_file"
-    echo ""
-    echo "--- Policy ---"
-    jq . "$settings_file"
-}
-
-cmd_doctor() {
-    local ok=true
-    echo -n "srt installed: "
-    if command -v srt &>/dev/null; then
-        echo "yes ($(srt --version 2>/dev/null || echo 'version unknown'))"
-    else
-        echo "NO  -> npm install -g @anthropic-ai/sandbox-runtime"
-        ok=false
-    fi
-    echo -n "jq installed: "
-    if command -v jq &>/dev/null; then
-        echo "yes"
-    else
-        echo "NO  -> brew install jq"
-        ok=false
-    fi
-    echo -n "bundled default settings present: "
-    if [[ -f "$BUNDLED_DEFAULT" ]]; then
-        echo "yes ($BUNDLED_DEFAULT)"
-    else
-        echo "NO  -> $BUNDLED_DEFAULT missing"
-        ok=false
-    fi
-    echo -n "claude installed: "
-    if command -v claude &>/dev/null; then
-        echo "yes ($(claude --version 2>/dev/null || echo 'version unknown'))"
-    else
-        echo "NO  -> install Claude Code (https://claude.ai/install.sh)"
-    fi
-    $ok && echo "" && echo "All required dependencies are present."
-}
-
-# --- Main dispatch ---
-
-# Handle subcommands that don't go through srt
-case "${1:-}" in
-    -h|--help|help)
+    if [[ -z "$project_dir" ]]; then
+        echo "Error: project directory required"
         usage
-        exit 0
-        ;;
-    init)
-        shift
-        cmd_init "$@"
-        exit 0
-        ;;
-    status)
-        shift
-        cmd_status "$@"
-        exit 0
-        ;;
-    doctor)
-        shift
-        cmd_doctor
-        exit 0
-        ;;
-esac
+        exit 1
+    fi
 
-# Parse --settings / --profile flags, leave remaining args as the command
-explicit_settings=""
-profile=""
-declare -a cmd_args=()
+    project_dir="$(cd "$project_dir" && pwd)"
 
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --settings)
-            explicit_settings="$2"
-            shift 2
-            ;;
-        --profile)
-            profile="$2"
-            shift 2
-            ;;
-        --)
-            shift
-            cmd_args=("$@")
+    if ! [[ -d "$project_dir" ]]; then
+        echo "Error: $project_dir is not a directory"
+        exit 1
+    fi
+
+    ensure_image
+
+    # If a container with this name already exists, resume it if stopped, or warn if running
+    if docker ps -a --format '{{.Names}}' | grep -q "^${container_name}$"; then
+        if docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
+            echo "Sandbox '$container_name' is already running."
+            echo "  Attach with: agent-sandbox shell $container_name"
+            return
+        fi
+        echo "Resuming stopped sandbox '$container_name'..."
+        docker start "$container_name" >/dev/null
+        echo "Sandbox running. Attach with:"
+        echo "  agent-sandbox shell $container_name"
+        return
+    fi
+
+    local project_name
+    project_name="$(basename "$project_dir")"
+    local volumes=(-v "$project_dir:/$project_name")
+
+    if $mount_config; then
+        # Named volumes for isolated, persistent agent config
+        volumes+=(
+            -v "${VOLUME_PREFIX}-claude:/home/agent/.claude"
+            -v "${VOLUME_PREFIX}-copilot:/home/agent/.copilot"
+            -v "${VOLUME_PREFIX}-vibe:/home/agent/.vibe"
+            -v "${VOLUME_PREFIX}-gh:/home/agent/.config/gh"
+        )
+
+    fi
+
+    # Pass through API keys if set on host
+    local env_args=(-e "PROJECT_NAME=$project_name" -e "SSH_AUTH_SOCK=")
+    [[ -n "${ANTHROPIC_API_KEY:-}" ]] && env_args+=(-e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
+    [[ -n "${OPENAI_API_KEY:-}" ]]    && env_args+=(-e "OPENAI_API_KEY=$OPENAI_API_KEY")
+    [[ -n "${MISTRAL_API_KEY:-}" ]]   && env_args+=(-e "MISTRAL_API_KEY=$MISTRAL_API_KEY")
+    local gh_token="${SANDBOX_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
+    [[ -n "$gh_token" ]] && env_args+=(-e "GITHUB_TOKEN=$gh_token")
+
+    echo "Starting sandbox '$container_name'..."
+    echo "  Project: $project_dir → /$project_name"
+    $mount_config && echo "  Agent configs: named volumes (isolated)"
+
+    docker run -dit \
+        --name "$container_name" \
+        --label "agentic-sandbox=true" \
+        --network=host \
+        --memory=8g \
+        --cpus=4 \
+        "${volumes[@]}" \
+        ${env_args[@]+"${env_args[@]}"} \
+        "${extra_envs[@]+"${extra_envs[@]}"}" \
+        "$IMAGE_NAME"
+
+    # Wait for agents to be installed
+    echo -n "Installing agents..."
+    local max_wait=300
+    local waited=0
+    local installed=false
+    while [[ $waited -lt $max_wait ]]; do
+        if docker exec "$container_name" bash -l -c "command -v claude" &>/dev/null; then
+            installed=true
             break
+        fi
+        echo -n "."
+        sleep 2
+        waited=$((waited + 2))
+    done
+    if $installed; then
+        echo " done."
+    else
+        echo " timeout."
+        echo "Install may still be running. Check with:"
+        echo "  docker logs $container_name"
+        echo "  docker exec $container_name ls /home/agent/.local/bin"
+    fi
+
+    echo ""
+    echo "Sandbox ready. Attach with:"
+    echo "  agent-sandbox shell $container_name"
+}
+
+cmd_shell() {
+    local container_name="${1:-agentic-sandbox}"
+    if ! docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
+        echo "Error: container '$container_name' is not running"
+        echo "Running containers:"
+        docker ps --filter "ancestor=$IMAGE_NAME" --format "  {{.Names}}  ({{.Status}})"
+        exit 1
+    fi
+    local project_name
+    project_name=$(docker exec "$container_name" printenv PROJECT_NAME 2>/dev/null || true)
+    if [[ -n "$project_name" ]]; then
+        docker exec -it -w "/$project_name" "$container_name" /bin/bash -l
+    else
+        docker exec -it "$container_name" /bin/bash -l
+    fi
+}
+
+cmd_stop() {
+    local container_name="${1:-agentic-sandbox}"
+    echo "Stopping '$container_name'..."
+    docker stop "$container_name" >/dev/null
+    echo "Done. (Container preserved — use 'start' to resume, or 'remove' to delete.)"
+}
+
+cmd_remove() {
+    local container_name="${1:-}"
+    if [[ -z "$container_name" ]]; then
+        echo "Error: container name required"
+        echo "Usage: agent-sandbox remove <container-name>"
+        exit 1
+    fi
+    if ! docker ps -a --format '{{.Names}}' | grep -q "^${container_name}$"; then
+        echo "Error: container '$container_name' does not exist"
+        exit 1
+    fi
+    echo "Removing '$container_name'..."
+    docker rm -f "$container_name" &>/dev/null
+    echo "Done. (Named volumes preserved — use 'reset-config' to wipe them.)"
+}
+
+cmd_reset_config() {
+    echo "This will delete all agent config volumes:"
+    echo "  - ${VOLUME_PREFIX}-claude   (Claude Code auth, settings, skills)"
+    echo "  - ${VOLUME_PREFIX}-copilot  (Copilot config)"
+    echo "  - ${VOLUME_PREFIX}-vibe     (Vibe config)"
+    echo "  - ${VOLUME_PREFIX}-gh       (GitHub CLI auth)"
+    echo ""
+    echo "Any running sandboxes will be stopped first."
+    read -rp "Continue? [y/N] " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Cancelled."
+        return
+    fi
+
+    # Stop any running sandboxes
+    local running
+    running=$(docker ps --filter "label=agentic-sandbox=true" -q)
+    if [[ -n "$running" ]]; then
+        echo "Stopping running sandboxes..."
+        docker rm -f $running &>/dev/null
+    fi
+
+    for vol in claude copilot vibe gh; do
+        docker volume rm "${VOLUME_PREFIX}-${vol}" 2>/dev/null \
+            && echo "  Removed ${VOLUME_PREFIX}-${vol}" \
+            || echo "  ${VOLUME_PREFIX}-${vol} (not present)"
+    done
+    echo "Done."
+}
+
+cmd_list() {
+    echo "Sandboxes:"
+    docker ps -a --filter "label=agentic-sandbox=true" --format "  {{.Names}}\t{{.Status}}"
+    local count
+    count=$(docker ps -a --filter "label=agentic-sandbox=true" -q | wc -l | tr -d ' ')
+    if [[ "$count" -eq 0 ]]; then
+        echo "  (none)"
+    fi
+}
+
+cmd_extend() {
+    local custom_dockerfile="${1:-}"
+    if [[ -z "$custom_dockerfile" || ! -f "$custom_dockerfile" ]]; then
+        echo "Error: provide a valid Dockerfile path"
+        echo "The Dockerfile should start with: FROM agentic-sandbox:latest"
+        exit 1
+    fi
+
+    ensure_image
+
+    local custom_name
+    custom_name="agentic-sandbox-custom:$(basename "$custom_dockerfile" .Dockerfile | tr '.' '-')"
+
+    echo "Building extended image '$custom_name' from $custom_dockerfile..."
+    docker build -t "$custom_name" -f "$custom_dockerfile" "$(dirname "$custom_dockerfile")"
+    echo ""
+    echo "Done. Use it with:"
+    echo "  docker run -dit --name my-sandbox -v /path/to/project:/workspace $custom_name"
+}
+
+cmd_sync_skills() {
+    local direction=""
+    local container_name=""
+    local container_skills_dir="/home/agent/.claude/skills"
+    local host_skills_dir="$HOME/.claude/skills"
+
+    # Parse args: optional container name and optional direction (push/pull)
+    for arg in "$@"; do
+        case "$arg" in
+            push|pull) direction="$arg" ;;
+            *) container_name="$arg" ;;
+        esac
+    done
+
+    # Auto-detect a running sandbox if none specified
+    if [[ -z "$container_name" ]]; then
+        container_name=$(docker ps --filter "label=agentic-sandbox=true" --format '{{.Names}}' | head -1)
+        if [[ -z "$container_name" ]]; then
+            echo "Error: no running sandbox found"
+            exit 1
+        fi
+    fi
+
+    if ! docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
+        echo "Error: container '$container_name' is not running"
+        exit 1
+    fi
+
+    # Ensure container skills dir exists
+    docker exec "$container_name" mkdir -p "$container_skills_dir"
+
+    if [[ "$direction" == "push" ]]; then
+        _sync_push "$container_name" "$container_skills_dir" "$host_skills_dir"
+        return
+    elif [[ "$direction" == "pull" ]]; then
+        _sync_pull "$container_name" "$container_skills_dir" "$host_skills_dir"
+        return
+    fi
+
+    # Default: show status and offer both directions
+    local host_list container_list
+    host_list=$(_list_host_skills "$host_skills_dir")
+    container_list=$(docker exec "$container_name" find "$container_skills_dir" -maxdepth 1 -mindepth 1 -printf '%f\n' 2>/dev/null | sort || true)
+
+    local only_host only_container both
+    only_host=$(comm -23 <(echo "$host_list") <(echo "$container_list") | grep -v '^$' || true)
+    only_container=$(comm -13 <(echo "$host_list") <(echo "$container_list") | grep -v '^$' || true)
+    both=$(comm -12 <(echo "$host_list") <(echo "$container_list") | grep -v '^$' || true)
+
+    local any_diff=false
+
+    if [[ -n "$only_host" ]]; then
+        any_diff=true
+        echo "Skills only on host (push to sync):"
+        while IFS= read -r s; do echo "  + $s"; done <<< "$only_host"
+    fi
+
+    if [[ -n "$only_container" ]]; then
+        any_diff=true
+        echo "Skills only in container (pull to sync):"
+        while IFS= read -r s; do echo "  + $s"; done <<< "$only_container"
+    fi
+
+    if [[ -n "$both" ]]; then
+        echo "Skills in both: $(echo "$both" | wc -l | tr -d ' ')"
+    fi
+
+    if ! $any_diff; then
+        echo "Skills are in sync ($(echo "$both" | wc -l | tr -d ' ') skills)."
+        return
+    fi
+
+    echo ""
+    echo "Options: [p]ush host→container, pu[l]l container→host, [b]oth, [s]kip"
+    read -rp "Choice: " choice
+    case "$choice" in
+        p|P) _sync_push "$container_name" "$container_skills_dir" "$host_skills_dir" ;;
+        l|L) _sync_pull "$container_name" "$container_skills_dir" "$host_skills_dir" ;;
+        b|B)
+            _sync_push "$container_name" "$container_skills_dir" "$host_skills_dir"
+            _sync_pull "$container_name" "$container_skills_dir" "$host_skills_dir"
             ;;
-        *)
-            cmd_args+=("$1")
-            shift
-            ;;
+        *) echo "Skipped." ;;
     esac
-done
+}
 
-# Default command is `claude`
-if [[ ${#cmd_args[@]} -eq 0 ]]; then
-    cmd_args=(claude)
-fi
+# List skill names on host (resolves symlinks, skips hidden files)
+_list_host_skills() {
+    local dir="$1"
+    [[ -d "$dir" ]] || return
+    for entry in "$dir"/*; do
+        [[ -e "$entry" || -L "$entry" ]] || continue
+        local name
+        name="$(basename "$entry")"
+        [[ "$name" == .* ]] && continue
+        echo "$name"
+    done | sort
+}
 
-require_srt
-require_jq
+# Push host skills → container (resolves symlinks via temp dir)
+_sync_push() {
+    local container_name="$1" container_dir="$2" host_dir="$3"
+    [[ -d "$host_dir" ]] || { echo "No host skills directory."; return; }
 
-settings_file=$(resolve_settings "$explicit_settings" "$profile")
-prepared_settings=$(prepare_settings_file "$settings_file")
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap "rm -rf '$tmpdir'" RETURN
 
-# Clean up the temp settings file on exit
-trap "rm -f '$prepared_settings'" EXIT
+    local count=0
+    for entry in "$host_dir"/*; do
+        [[ -e "$entry" || -L "$entry" ]] || continue
+        local name
+        name="$(basename "$entry")"
+        [[ "$name" == .* ]] && continue
+        # cp -rL dereferences symlinks and copies content
+        cp -rL "$entry" "$tmpdir/$name"
+        count=$((count + 1))
+    done
 
-# Build the scrubbed env (read _passEnv from the original, not the stripped temp)
-declare -a env_pairs=()
-while IFS= read -r pair; do
-    [[ -n "$pair" ]] && env_pairs+=("$pair")
-done < <(build_env_args "$settings_file")
+    if [[ $count -eq 0 ]]; then
+        echo "No host skills to push."
+        return
+    fi
 
-# Hand off to srt with -i to clear env, then pass only the allowlisted vars.
-# The `--` separator prevents srt from intercepting flags meant for the
-# wrapped command (e.g. `claude --version` would otherwise hit `srt --version`).
-exec env -i "${env_pairs[@]}" srt --settings "$prepared_settings" -- "${cmd_args[@]}"
+    docker cp "$tmpdir/." "$container_name:$container_dir/"
+    # Fix ownership (needs sudo since container runs as non-root)
+    docker exec -u root "$container_name" chown -R agent:agent "$container_dir"
+    echo "Pushed $count skills to container."
+}
+
+# Pull container skills → host
+_sync_pull() {
+    local container_name="$1" container_dir="$2" host_dir="$3"
+    mkdir -p "$host_dir"
+
+    local skills
+    skills=$(docker exec "$container_name" find "$container_dir" -maxdepth 1 -mindepth 1 -printf '%f\n' 2>/dev/null || true)
+
+    local count=0
+    while IFS= read -r skill; do
+        [[ -z "$skill" || "$skill" == .* ]] && continue
+        # Skip if host already has this skill (as file, dir, or symlink)
+        [[ -e "$host_dir/$skill" || -L "$host_dir/$skill" ]] && continue
+        docker cp "$container_name:$container_dir/$skill" "$host_dir/$skill"
+        count=$((count + 1))
+    done <<< "$skills"
+
+    if [[ $count -eq 0 ]]; then
+        echo "No new container skills to pull."
+    else
+        echo "Pulled $count new skills to host."
+    fi
+}
+
+# Main dispatch
+case "${1:-}" in
+    start)       shift; cmd_start "$@" ;;
+    shell)       shift; cmd_shell "$@" ;;
+    stop)        shift; cmd_stop "$@" ;;
+    remove|rm)   shift; cmd_remove "$@" ;;
+    reset-config) shift; cmd_reset_config "$@" ;;
+    list)        shift; cmd_list "$@" ;;
+    build)       shift; cmd_build "$@" ;;
+    extend)      shift; cmd_extend "$@" ;;
+    sync-skills) shift; cmd_sync_skills "$@" ;;
+    -h|--help|help|"") usage ;;
+    *) echo "Unknown command: $1"; usage; exit 1 ;;
+esac
