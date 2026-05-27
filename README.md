@@ -9,6 +9,7 @@ This repo currently uses the **Docker setup at the root** as the active path. A 
 ## Features
 
 - Isolated Docker containers with resource limits (8 GB RAM, 4 CPUs)
+- **Egress firewall** dropping outbound traffic to anything outside an allowlist (Anthropic, GitHub, npm, pypi, dhis2.org, dev CDNs)
 - Pre-installed runtimes: Python 3 (with `uv`), Node.js 22 LTS, npm/pnpm/yarn
 - Pre-installed Playwright + chromium with all Ubuntu 24.04 system deps
 - Optional language extensions: Go, Java, Rust
@@ -18,6 +19,8 @@ This repo currently uses the **Docker setup at the root** as the active path. A 
 - Bidirectional skill sync between host and container (`sync-skills`)
 - HTTPS-only git access (SSH disabled for security)
 - VS Code Dev Container support via `.devcontainer/devcontainer.json`
+- Pre-published host port (`SANDBOX_HOST_PORT`) for agent-started servers the user wants to open in their browser
+- Joinable to user-defined Docker networks for reaching dev containers (DHIS2, etc.) by name
 
 ## Requirements
 
@@ -62,10 +65,50 @@ Commands:
   sync-skills [push|pull]   Sync ~/.claude/skills between container and host
   reset-config              Wipe all agent config volumes (with confirmation)
 
-Options:
+Options (for `start`):
   -n, --name <name>         Custom container name
   -e, --env <VAR=value>     Pass extra environment variables
+  --network <name>          Attach to a Docker network (repeatable)
+  -p, --port HOST:CONT      Publish an additional port (repeatable)
+  --host-network            Opt out of bridge+firewall (legacy mode)
   --no-config               Skip mounting agent config volumes
+```
+
+## Networking and host-visible ports
+
+By default the sandbox uses **bridge networking with an egress firewall** that drops outbound traffic to anything not on the allowlist. The container starts an iptables firewall at boot (verified by trying to reach `example.com`, which must fail, and `api.anthropic.com`, which must succeed).
+
+To make a server the agent starts visible in your host browser, `agent-sandbox start` pre-publishes a random port from `49200–49300` and exposes it as `SANDBOX_HOST_PORT` inside the container. The entrypoint also writes a snippet to `~/.claude/CLAUDE.md` telling Claude to use that port for any browser-facing service:
+
+```bash
+# Inside the sandbox:
+python -m http.server "$SANDBOX_HOST_PORT"
+# Then on the host: open http://localhost:<that-port>
+```
+
+To join another Docker network (so the sandbox can reach e.g. a DHIS2 dev container by name):
+
+```bash
+docker network create dev-net   # one time
+docker run -d --name dhis2 --network dev-net dhis2/core:...
+agent-sandbox start ~/Repos/dhis2-app --network dev-net
+# Inside: curl http://dhis2:8080/api/me   (resolves via Docker DNS)
+```
+
+See `dev-net.md` for the full design including DHIS2 docker-compose patterns and CORS/auth notes.
+
+If you need a specific extra port forwarded:
+
+```bash
+agent-sandbox start ~/Repos/my-app -p 5173:5173
+```
+
+To bypass the firewall entirely (e.g. for debugging, or when you need broad network access):
+
+```bash
+agent-sandbox start ~/Repos/my-app --host-network
+# This re-enables --network=host and disables the firewall.
+# SANDBOX_HOST_PORT is not set in this mode (no port forwarding needed).
 ```
 
 ## Agent Authentication
@@ -167,12 +210,7 @@ SANDBOX_GITHUB_TOKEN=github_pat_...
 - All git via HTTPS using `GITHUB_TOKEN`
 - Resource limits prevent runaway agent processes
 - API keys injected at runtime, never baked into images
-
-### Known gap: network egress is unrestricted
-
-The container currently uses `--network=host`, so outbound traffic from the agent is not restricted. This is convenient (Playwright UIs accessible on host browser, no port-forwarding) but means a compromised agent could exfiltrate to any host.
-
-Anthropic's reference dev container ships an [iptables-based egress firewall](https://github.com/anthropics/claude-code/blob/main/.devcontainer/init-firewall.sh) that drops all outbound except an allowlist. Adopting that would require switching back to bridge networking and adding `NET_ADMIN`/`NET_RAW` capabilities. See the "Comparison with Anthropic's reference" section below.
+- **Egress firewall on by default**: outbound traffic restricted to an explicit allowlist (Anthropic, GitHub, npm, pypi, dhis2.org, dev CDNs). Adapted from [Anthropic's reference dev container](https://github.com/anthropics/claude-code/blob/main/.devcontainer/init-firewall.sh) with extensions for our domain list and Docker-network handling. Verified at every container start. Bypass with `--host-network` if needed.
 
 ### Read-only base image
 
@@ -193,22 +231,19 @@ Anthropic publishes a reference dev container at [anthropics/claude-code/.devcon
 | Base image | `ubuntu:24.04` | `node:20` |
 | Agents | Claude + Copilot + Vibe | Claude only |
 | Toolchain | Python, Node, uv, Playwright + chromium, language extensions available | Node + general dev tools |
-| Network | `--network=host` (open) | bridge + iptables egress firewall |
+| Network | bridge + iptables egress firewall | bridge + iptables egress firewall |
+| Egress allowlist | Anthropic + GitHub + npm + pypi + dhis2 + dev CDNs | Anthropic + GitHub + npm + sentry + vscode marketplace |
 | Volume isolation | Shared across all sandboxes (log in once) | Per-`${devcontainerId}` (re-login per project) |
 | Project mount | `/<project-name>` | `/workspace` |
 | Skills sync | Bidirectional `sync-skills` command | n/a (Claude-only image) |
-| Firewall verification | n/a | actively verifies at start (curl example.com fails, api.github.com works) |
+| Host-visible port | Random `SANDBOX_HOST_PORT` from 49200-49300, auto-published | Manual port forwarding via VS Code |
+| Joinable to user networks | `--network dev-net` flag | n/a |
+| INPUT chain | ACCEPT (port forwarding from host works) | DROP (no port forwarding needed) |
 
-**Worth adopting from Anthropic:**
-- **iptables egress firewall** — biggest security improvement, drops unauthorized outbound traffic. Implementation in their `init-firewall.sh` is solid: dynamic GitHub IP range fetch, explicit allowlist of npmjs/anthropic/sentry/statsig/vscode, DNS + localhost + SSH allowed, default DROP. The trade-off is switching back to bridge networking (loses easy Playwright UI access) and adding `NET_ADMIN`/`NET_RAW` caps.
-- **Firewall verification at startup** — runs after every container start, fails fast if rules don't take effect.
-- **Per-project volume IDs via `${devcontainerId}`** — stronger isolation if you want it; trade-off is more frequent re-auth.
-
-**Worth keeping different:**
-- Ubuntu base over node:20 — supports the multi-language toolchain.
-- Shared auth volume — saves re-login across projects.
-- Multi-agent support — useful even though Claude is dominant.
-- Playwright pre-installed — saves ~2 min of setup on first webapp-testing use.
+**Differences worth noting:**
+- We keep INPUT ACCEPT because the user often wants to reach a sandbox-started server from their host browser; Anthropic's setup uses VS Code's remote-container protocol and doesn't need it.
+- Our allowlist includes pypi (for Python agents) and dhis2 (the user's primary domain).
+- Shared auth volume + multi-agent + Ubuntu base are deliberate differences from Anthropic's minimal-Claude-only design.
 
 ## License
 

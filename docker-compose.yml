@@ -10,6 +10,30 @@ services:
     stdin_open: true
     tty: true
 
+    # Bridge networking (default for compose). The container reaches the
+    # internet via NAT; egress is filtered by init-firewall.sh which runs
+    # from the entrypoint. To join a user-defined network like `dev-net`
+    # (so the sandbox can talk to other dev containers by name), uncomment
+    # the `networks` block below and ensure the network exists:
+    #     docker network create dev-net
+    #
+    # networks:
+    #   - default
+    #   - dev-net
+
+    # Required for the in-container iptables firewall.
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    # Publish the sandbox's host-visible port. Override at compose-up time
+    # via SANDBOX_HOST_PORT, e.g.:
+    #     SANDBOX_HOST_PORT=49234 docker compose up
+    # The CLI (agent-sandbox.sh) picks a random port from 49200-49300
+    # automatically; for compose you choose explicitly.
+    ports:
+      - "${SANDBOX_HOST_PORT:-49234}:${SANDBOX_HOST_PORT:-49234}"
+
     volumes:
       # Named volumes for isolated, persistent agent config
       - claude-config:/home/agent/.claude
@@ -25,6 +49,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
       - GITHUB_TOKEN=${SANDBOX_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}
+      - SANDBOX_HOST_PORT=${SANDBOX_HOST_PORT:-49234}
       - SSH_AUTH_SOCK=
 
     # Resource limits to prevent runaway agents
@@ -34,8 +59,10 @@ services:
           memory: 8g
           cpus: "4"
 
-    # Host networking: container ports accessible directly on host
-    network_mode: host
+# Uncomment to attach to an external user-defined network.
+# networks:
+#   dev-net:
+#     external: true
 
 volumes:
   claude-config:

@@ -27,14 +27,23 @@ Commands:
   extend <dockerfile>    Build a custom image extending the base sandbox
   sync-skills [container] [push|pull]  Sync skills between host and container
 
-Options:
+Options for `start`:
   -n, --name NAME        Container name (default: agentic-sandbox)
   -e, --env KEY=VAL      Pass extra environment variable (repeatable)
+  --network NAME         Attach to a Docker network (repeatable; e.g. --network dev-net
+                         to reach a DHIS2 container by name)
+  -p, --port HOST:CONT   Publish an additional port (repeatable). A random port from
+                         49200-49300 is always published as SANDBOX_HOST_PORT.
+  --host-network         Opt out of bridge networking and firewall. Use --network=host
+                         and skip iptables. SANDBOX_HOST_PORT is not set.
   --no-config            Don't mount agent config directories
 
 Examples:
   agent-sandbox start ~/projects/my-app
   agent-sandbox start ~/projects/my-app -n my-sandbox -e MY_VAR=hello
+  agent-sandbox start ~/projects/dhis2-app --network dev-net
+  agent-sandbox start ~/projects/my-app -p 5173:5173
+  agent-sandbox start ~/projects/my-app --host-network    # no firewall (legacy mode)
   agent-sandbox shell
   agent-sandbox shell my-sandbox
   agent-sandbox stop
@@ -44,6 +53,23 @@ Examples:
   agent-sandbox sync-skills pull         # pull container skills to host
   agent-sandbox sync-skills my-sandbox push  # target a specific container
 USAGE
+}
+
+# Find an unused TCP port in the 49200-49300 range.
+# Echoes the port number on stdout, or returns non-zero if no port is free.
+pick_port() {
+    local candidate
+    local attempts=30
+    for ((i=0; i<attempts; i++)); do
+        candidate=$((49200 + RANDOM % 101))
+        # Skip ports already in use on the host (any state, not just LISTEN, to
+        # avoid TIME_WAIT collisions when re-creating sandboxes quickly).
+        if ! lsof -nP -iTCP:"$candidate" >/dev/null 2>&1; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
 }
 
 ensure_image() {
@@ -63,11 +89,17 @@ cmd_start() {
     local container_name="agentic-sandbox"
     local extra_envs=()
     local mount_config=true
+    local extra_networks=()
+    local extra_ports=()
+    local host_network=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -n|--name) container_name="$2"; shift 2 ;;
             -e|--env) extra_envs+=(-e "$2"); shift 2 ;;
+            --network) extra_networks+=("$2"); shift 2 ;;
+            -p|--port|--publish) extra_ports+=(-p "$2"); shift 2 ;;
+            --host-network) host_network=true; shift ;;
             --no-config) mount_config=false; shift ;;
             -*) echo "Unknown option: $1"; usage; exit 1 ;;
             *)
@@ -132,20 +164,75 @@ cmd_start() {
     local gh_token="${SANDBOX_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
     [[ -n "$gh_token" ]] && env_args+=(-e "GITHUB_TOKEN=$gh_token")
 
+    # --- Networking + ports ---
+    # Default: bridge (default Docker network), egress firewall on, plus a
+    # random pre-published host port (SANDBOX_HOST_PORT) so the agent can
+    # bind something the user can open in their host browser.
+    #
+    # Opt-out: --host-network uses --network=host and skips the firewall.
+    # This is the legacy behavior; loses egress restrictions.
+    #
+    # Joining a user-defined network: pass --network NAME (repeatable). docker
+    # run only accepts one --network, so the first goes into the run command
+    # and any extras are attached afterward via `docker network connect`.
+    local net_args=()
+    local cap_args=()
+    local port_args=()
+    local sandbox_port=""
+
+    if $host_network; then
+        net_args=(--network=host)
+        env_args+=(-e "SANDBOX_SKIP_FIREWALL=1")
+    else
+        cap_args=(--cap-add=NET_ADMIN --cap-add=NET_RAW)
+        if ! sandbox_port=$(pick_port); then
+            echo "Error: could not find a free port in 49200-49300 on the host." >&2
+            exit 1
+        fi
+        port_args+=(-p "${sandbox_port}:${sandbox_port}")
+        env_args+=(-e "SANDBOX_HOST_PORT=$sandbox_port")
+        if [[ ${#extra_networks[@]} -gt 0 ]]; then
+            net_args=(--network="${extra_networks[0]}")
+        fi
+    fi
+
+    # Append any user-specified explicit port forwards.
+    port_args+=("${extra_ports[@]+"${extra_ports[@]}"}")
+
     echo "Starting sandbox '$container_name'..."
     echo "  Project: $project_dir → /$project_name"
     $mount_config && echo "  Agent configs: named volumes (isolated)"
+    if $host_network; then
+        echo "  Network: host (firewall disabled)"
+    else
+        if [[ ${#extra_networks[@]} -gt 0 ]]; then
+            echo "  Network: ${extra_networks[*]} (firewall on, egress allowlisted)"
+        else
+            echo "  Network: bridge (firewall on, egress allowlisted)"
+        fi
+        echo "  Host-visible port: http://localhost:$sandbox_port  (\$SANDBOX_HOST_PORT)"
+    fi
 
     docker run -dit \
         --name "$container_name" \
         --label "agentic-sandbox=true" \
-        --network=host \
+        "${net_args[@]+"${net_args[@]}"}" \
+        "${cap_args[@]+"${cap_args[@]}"}" \
+        "${port_args[@]+"${port_args[@]}"}" \
         --memory=8g \
         --cpus=4 \
         "${volumes[@]}" \
         ${env_args[@]+"${env_args[@]}"} \
         "${extra_envs[@]+"${extra_envs[@]}"}" \
         "$IMAGE_NAME"
+
+    # Attach any additional user-defined networks beyond the first.
+    if ! $host_network && [[ ${#extra_networks[@]} -gt 1 ]]; then
+        for net in "${extra_networks[@]:1}"; do
+            docker network connect "$net" "$container_name"
+            echo "  Attached additional network: $net"
+        done
+    fi
 
     # Wait for agents to be installed
     echo -n "Installing agents..."

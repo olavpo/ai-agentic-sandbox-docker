@@ -26,8 +26,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends locales sudo \
 RUN echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME
 
-# Base system tools
+# Base system tools (includes iptables/ipset/aggregate for the egress firewall)
 RUN apt-get install -y --no-install-recommends \
+    aggregate \
     bash \
     bash-completion \
     build-essential \
@@ -45,6 +46,8 @@ RUN apt-get install -y --no-install-recommends \
     gnupg2 \
     htop \
     iproute2 \
+    iptables \
+    ipset \
     jq \
     less \
     lsof \
@@ -114,6 +117,17 @@ ENV PATH="/home/$USERNAME/.local/bin:${PATH}"
 SHELL ["/bin/bash", "-c"]
 
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=755 init-firewall.sh /usr/local/bin/init-firewall.sh
+
+# Allow agent to run only the firewall script via sudo without a password.
+# (General passwordless sudo is granted earlier; this targeted entry keeps the
+# explicit intent clear and provides a deny-other-root path if the broader
+# rule is later tightened.)
+USER root
+RUN echo "$USERNAME ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" \
+        > /etc/sudoers.d/$USERNAME-firewall \
+    && chmod 0440 /etc/sudoers.d/$USERNAME-firewall
+USER $USERNAME
 
 WORKDIR /workspaces
 
