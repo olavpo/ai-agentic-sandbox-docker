@@ -75,6 +75,28 @@ Options (for `start`):
   --no-config               Skip mounting agent config volumes
 ```
 
+## Convenience wrappers: `claude-sandboxed` / `vibe-sandboxed`
+
+For the common case of "give me a sandbox running a specific agent" there are two short-name wrappers backed by a single script (`sandboxed.sh`):
+
+```bash
+claude-sandboxed                 # list existing claude sandboxes
+claude-sandboxed -n project-x    # create-or-resume "claude-project-x" and launch claude in it
+                                 # cwd is mounted as the project; --agent claude implied
+
+vibe-sandboxed                   # same, but for vibe
+vibe-sandboxed -n project-x      # creates "vibe-project-x" with --agent vibe --no-dev-net
+```
+
+Set up symlinks:
+
+```bash
+ln -s ~/Repos/ai-agentic-sandbox/sandboxed.sh /usr/local/bin/claude-sandboxed
+ln -s ~/Repos/ai-agentic-sandbox/sandboxed.sh /usr/local/bin/vibe-sandboxed
+```
+
+The wrappers prefix the container name (`claude-` or `vibe-`) and filter listings on the `agentic-sandbox-agent` label, so the two agents don't collide and listings are agent-specific. To pass extra options at create time, use `agent-sandbox start` directly.
+
 ## Choosing an agent
 
 `--agent NAME` controls which AI coding agent gets installed and which config volume gets mounted. The image bundles the runtimes for all three (Python+uv, Node.js, npm), but only the chosen agent is actually installed at first container start and only its config volume is mounted.

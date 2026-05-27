@@ -255,6 +255,7 @@ cmd_start() {
     docker run -dit \
         --name "$container_name" \
         --label "agentic-sandbox=true" \
+        --label "agentic-sandbox-agent=$agent_choice" \
         "${net_args[@]+"${net_args[@]}"}" \
         "${cap_args[@]+"${cap_args[@]}"}" \
         "${port_args[@]+"${port_args[@]}"}" \
