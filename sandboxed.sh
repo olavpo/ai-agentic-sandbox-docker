@@ -84,7 +84,7 @@ exec_into_container() {
     proj=$(docker exec "$container" printenv PROJECT_NAME 2>/dev/null || true)
     local -a workdir=()
     [[ -n "$proj" ]] && workdir=(-w "/$proj")
-    exec docker exec -it "${workdir[@]}" "$container" /bin/bash -lc "exec $EXEC_CMD"
+    exec docker exec -it ${workdir[@]+"${workdir[@]}"} "$container" /bin/bash -lc "exec $EXEC_CMD"
 }
 
 # Case 1: already running → exec straight in.
@@ -102,5 +102,5 @@ fi
 
 # Case 3: doesn't exist → create using cwd, then exec in.
 echo "Creating new $AGENT sandbox '$container' with $(pwd) as the project..."
-agent-sandbox start "$(pwd)" -n "$container" --agent "$AGENT" "${EXTRA_ARGS[@]}"
+agent-sandbox start "$(pwd)" -n "$container" --agent "$AGENT" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 exec_into_container
