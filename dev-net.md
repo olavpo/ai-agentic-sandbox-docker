@@ -142,16 +142,14 @@ python -m http.server "$SANDBOX_HOST_PORT"
 # Then on the host: open http://localhost:<that-port>
 ```
 
-**For Claude's awareness**, the entrypoint drops a hint into a CLAUDE.md that Claude reads. Either:
-- Append to `~/.claude/CLAUDE.md` (user-scope, persists in the named volume) — note: only adds the hint once and then has stale port unless we update it on every start
-- Write to `/etc/sandbox-info.md` and have an init prompt or convention that surfaces it
-- Set as a `containerEnv` that Claude Code surfaces (Claude Code shows env vars starting with `CLAUDE_` in some places)
+**For Claude's awareness:** the port is exposed as an env var and as the contents of `/etc/sandbox-info`. We deliberately do **not** write a snippet to `~/.claude/CLAUDE.md` — that file lives in the named `agentic-sandbox-claude` volume which is shared across every sandbox on the host, so writing port `49234` from one sandbox would clobber the value another sandbox is using and Claude in either session would see the wrong port.
 
-**Recommended:** at every `agent-sandbox start`, write a fresh `~/.claude/CLAUDE.md` snippet block (delimited so we can replace it idempotently) that says:
+To make Claude aware, either:
+- Mention the port in your prompt: "use `$SANDBOX_HOST_PORT` for the visual companion"
+- Add a project-level `CLAUDE.md` in repos that regularly need host-visible servers, with text like:
+  > When starting any server the user should open in their browser, bind to `$SANDBOX_HOST_PORT` (set by the agent-sandbox container, also in `/etc/sandbox-info`).
 
-> When you need to start a server for the user to view in their browser, bind to port `$SANDBOX_HOST_PORT` (currently `49234`). This is pre-published from the sandbox to the host. The user can open `http://localhost:49234`.
-
-The skills (brainstorming etc.) that take `--port` flags can be invoked with that env var.
+The skills that take `--port` flags (brainstorming etc.) can be invoked with that env var.
 
 ### Why a port range and not a fixed port
 

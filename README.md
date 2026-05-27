@@ -78,13 +78,18 @@ Options (for `start`):
 
 By default the sandbox uses **bridge networking with an egress firewall** that drops outbound traffic to anything not on the allowlist. The container starts an iptables firewall at boot (verified by trying to reach `example.com`, which must fail, and `api.anthropic.com`, which must succeed).
 
-To make a server the agent starts visible in your host browser, `agent-sandbox start` pre-publishes a random port from `49200–49300` and exposes it as `SANDBOX_HOST_PORT` inside the container. The entrypoint also writes a snippet to `~/.claude/CLAUDE.md` telling Claude to use that port for any browser-facing service:
+To make a server the agent starts visible in your host browser, `agent-sandbox start` pre-publishes a random port from `49200–49300` and exposes it inside the container as:
+
+- the `SANDBOX_HOST_PORT` environment variable
+- `/etc/sandbox-info` (a single-line plain-text dump for tools that don't read env)
 
 ```bash
 # Inside the sandbox:
 python -m http.server "$SANDBOX_HOST_PORT"
 # Then on the host: open http://localhost:<that-port>
 ```
+
+The port is **container-scoped**, not written into the shared `~/.claude` volume — each sandbox gets its own random port and won't clobber another sandbox's hint. To tell Claude about the port, either mention it in your prompt ("start the visual companion on `$SANDBOX_HOST_PORT`") or add a hint to a project-level `CLAUDE.md` in repos that regularly need it.
 
 To join another Docker network (so the sandbox can reach e.g. a DHIS2 dev container by name):
 

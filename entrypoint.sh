@@ -27,45 +27,19 @@ fi
 # --- Surface SANDBOX_HOST_PORT to the agent ---
 # agent-sandbox.sh pre-allocates an unused port on the host and publishes it
 # both ways (-p PORT:PORT), then passes it via the env. Make it discoverable
-# through three channels:
-#   1) the env var itself (already set)
-#   2) /etc/sandbox-info (for tools that don't read env)
-#   3) a delimited snippet in ~/.claude/CLAUDE.md so Claude reliably learns
-#      about it on each start
+# through two container-local channels:
+#   1) the env var itself (already set by docker run)
+#   2) /etc/sandbox-info — a plain-text dump for any tool that doesn't read env
+#
+# We deliberately do NOT write to ~/.claude/CLAUDE.md: that path is a named
+# volume shared across every sandbox on this machine, so writing there from
+# one sandbox would corrupt the port for any other running sandbox. The
+# user surfaces the port to Claude either by mentioning it in conversation
+# ("use $SANDBOX_HOST_PORT for the visual companion") or by adding a hint
+# to a project-level CLAUDE.md in their repo if the project regularly needs
+# host-visible servers.
 if [[ -n "${SANDBOX_HOST_PORT:-}" ]]; then
     echo "SANDBOX_HOST_PORT=$SANDBOX_HOST_PORT" | sudo tee /etc/sandbox-info >/dev/null
-
-    mkdir -p "$AGENT_HOME/.claude"
-    claude_md="$AGENT_HOME/.claude/CLAUDE.md"
-    start_marker="<!-- BEGIN agent-sandbox -->"
-    end_marker="<!-- END agent-sandbox -->"
-
-    # Strip any previous block, then append the fresh one.
-    if [[ -f "$claude_md" ]]; then
-        # sed -i in-place; use a tmp file for portability.
-        awk -v start="$start_marker" -v end="$end_marker" '
-            $0 == start { skip = 1; next }
-            $0 == end   { skip = 0; next }
-            !skip       { print }
-        ' "$claude_md" > "$claude_md.tmp" && mv "$claude_md.tmp" "$claude_md"
-    fi
-
-    cat >> "$claude_md" <<EOF
-$start_marker
-## Running services for the user's browser
-
-The sandbox pre-published one port to the host: \`$SANDBOX_HOST_PORT\` (also available as \`\$SANDBOX_HOST_PORT\` env var, and in \`/etc/sandbox-info\`).
-
-If you need to start a server, dev preview, or visual companion that the user should open in their browser, **bind to port \`$SANDBOX_HOST_PORT\`**. The user can then open <http://localhost:$SANDBOX_HOST_PORT> on their host.
-
-Examples:
-- \`python -m http.server \$SANDBOX_HOST_PORT\`
-- For skills that take a \`--port\` flag, pass \`\$SANDBOX_HOST_PORT\`.
-- For \`vite\`, \`webpack-dev-server\`, etc., configure the port in the project's config or via \`--port \$SANDBOX_HOST_PORT\`.
-
-Only one host-visible port is published per sandbox session. If you need another, start a fresh sandbox or ask the user to publish more ports explicitly via \`agent-sandbox start -p HOST:CONTAINER\`.
-$end_marker
-EOF
 fi
 
 # --- Install agents on first run ---
