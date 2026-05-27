@@ -63,7 +63,9 @@ You're running inside the **agentic-sandbox** Docker container, not directly on 
 
 Outbound traffic is filtered by an iptables egress firewall. Allowed by default: Anthropic, GitHub, npm/yarn registry, pypi, dhis2.org, plus a small set of dev CDNs (Playwright, VS Code marketplace, NodeSource, Debian). Anything else is dropped — `curl https://example.com` will fail. If you need a new host, ask the user to add it to `init-firewall.sh` and rebuild.
 
-If the user attached the sandbox to a Docker user-defined network (commonly `dev-net`), other dev containers on that network — e.g. a DHIS2 instance named `dhis2` — are reachable by container name: `curl http://dhis2:8080/api/me`. Check `/etc/resolv.conf` and `ip route` if you're unsure what's attached.
+You're on the **`dev-net`** Docker network by default. Sibling dev containers (e.g. a DHIS2 instance named `dhis2`, a database named `dhis2-db`, an MCP server wrapped as a container) are reachable by container name: `curl http://dhis2:8080/api/me`. Use `ip route` to see what subnets are attached.
+
+Services running on the user's host machine are **not** reachable from inside the sandbox by default. If you need to talk to something on the host, ask the user to either run it as a sibling container on `dev-net` or to install/run the equivalent inside the sandbox.
 
 ### Host-visible port: `$SANDBOX_HOST_PORT`
 

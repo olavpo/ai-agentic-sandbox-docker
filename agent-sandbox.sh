@@ -33,8 +33,10 @@ Options for `start`:
                          vibe, or all. Only the chosen agent's config volume is
                          mounted; only that agent is installed at first start.
   -e, --env KEY=VAL      Pass extra environment variable (repeatable)
-  --network NAME         Attach to a Docker network (repeatable; e.g. --network dev-net
-                         to reach a DHIS2 container by name)
+  --network NAME         Attach to an *additional* Docker network (repeatable).
+                         The sandbox is already on `dev-net` by default; use this
+                         to also join a second network.
+  --no-dev-net           Skip attaching to dev-net (the default shared network).
   -p, --port HOST:CONT   Publish an additional port (repeatable). A random port from
                          49200-49300 is always published as SANDBOX_HOST_PORT.
   --host-network         Opt out of bridge networking and firewall. Use --network=host
@@ -97,6 +99,7 @@ cmd_start() {
     local extra_networks=()
     local extra_ports=()
     local host_network=false
+    local use_devnet=true
     local agent_choice="claude"
 
     while [[ $# -gt 0 ]]; do
@@ -104,6 +107,7 @@ cmd_start() {
             -n|--name) container_name="$2"; shift 2 ;;
             -e|--env) extra_envs+=(-e "$2"); shift 2 ;;
             --network) extra_networks+=("$2"); shift 2 ;;
+            --no-dev-net) use_devnet=false; shift ;;
             -p|--port|--publish) extra_ports+=(-p "$2"); shift 2 ;;
             --host-network) host_network=true; shift ;;
             --no-config) mount_config=false; shift ;;
@@ -216,8 +220,21 @@ cmd_start() {
         fi
         port_args+=(-p "${sandbox_port}:${sandbox_port}")
         env_args+=(-e "SANDBOX_HOST_PORT=$sandbox_port")
-        if [[ ${#extra_networks[@]} -gt 0 ]]; then
-            net_args=(--network="${extra_networks[0]}")
+
+        # Build the effective network list: dev-net (default) + any user --network entries.
+        # docker run only accepts one --network, so the first one goes there
+        # and any others are attached after the container starts.
+        local -a all_networks=()
+        if $use_devnet; then
+            # Auto-create dev-net if missing. Idempotent.
+            docker network inspect dev-net &>/dev/null \
+                || docker network create dev-net >/dev/null
+            all_networks+=("dev-net")
+        fi
+        all_networks+=("${extra_networks[@]+"${extra_networks[@]}"}")
+
+        if [[ ${#all_networks[@]} -gt 0 ]]; then
+            net_args=(--network="${all_networks[0]}")
         fi
     fi
 
@@ -231,11 +248,7 @@ cmd_start() {
     if $host_network; then
         echo "  Network: host (firewall disabled)"
     else
-        if [[ ${#extra_networks[@]} -gt 0 ]]; then
-            echo "  Network: ${extra_networks[*]} (firewall on, egress allowlisted)"
-        else
-            echo "  Network: bridge (firewall on, egress allowlisted)"
-        fi
+        echo "  Network: ${all_networks[*]:-bridge} (firewall on, egress allowlisted)"
         echo "  Host-visible port: http://localhost:$sandbox_port  (\$SANDBOX_HOST_PORT)"
     fi
 
@@ -252,9 +265,9 @@ cmd_start() {
         "${extra_envs[@]+"${extra_envs[@]}"}" \
         "$IMAGE_NAME"
 
-    # Attach any additional user-defined networks beyond the first.
-    if ! $host_network && [[ ${#extra_networks[@]} -gt 1 ]]; then
-        for net in "${extra_networks[@]:1}"; do
+    # Attach any additional networks beyond the first.
+    if ! $host_network && [[ ${#all_networks[@]} -gt 1 ]]; then
+        for net in "${all_networks[@]:1}"; do
             docker network connect "$net" "$container_name"
             echo "  Attached additional network: $net"
         done

@@ -105,16 +105,28 @@ python -m http.server "$SANDBOX_HOST_PORT"
 
 The port is **container-scoped**, not written into the shared `~/.claude` volume — each sandbox gets its own random port and won't clobber another sandbox's hint. To tell Claude about the port, either mention it in your prompt ("start the visual companion on `$SANDBOX_HOST_PORT`") or add a hint to a project-level `CLAUDE.md` in repos that regularly need it.
 
-To join another Docker network (so the sandbox can reach e.g. a DHIS2 dev container by name):
+The sandbox is automatically attached to a Docker user-defined network called **`dev-net`** (auto-created on first start). Put any sibling dev containers (DHIS2, dev DBs, MCP servers wrapped in containers) on the same network and the sandbox reaches them by container name:
 
 ```bash
-docker network create dev-net   # one time
 docker run -d --name dhis2 --network dev-net dhis2/core:...
-agent-sandbox start ~/Repos/dhis2-app --network dev-net
+agent-sandbox start ~/Repos/dhis2-app
 # Inside: curl http://dhis2:8080/api/me   (resolves via Docker DNS)
 ```
 
+Pass `--no-dev-net` to skip this and use only the default Docker bridge. Pass `--network OTHER` to attach to additional networks on top of dev-net.
+
 See `dev-net.md` for the full design including DHIS2 docker-compose patterns and CORS/auth notes.
+
+### MCP servers
+
+Stdio-type MCP servers configured on the host (e.g. `python -m my_mcp` spawned by Claude) cannot be invoked across the container boundary — the host's paths and binaries aren't visible inside the container.
+
+Two practical patterns inside the sandbox:
+
+- **Install the MCP server inside the container.** Add the pip/npm install to the Dockerfile or run it manually inside the sandbox; configure Claude's `mcpServers` to point at the in-container binary. Auth/state goes in the agent's named volume.
+- **Wrap the MCP server as a container on `dev-net`.** Run it once with `--network dev-net --name my-mcp`. Switch it to an HTTP transport and configure Claude to reach `http://my-mcp:PORT`.
+
+See `dev-net.md` for the full discussion.
 
 If you need a specific extra port forwarded:
 

@@ -1,8 +1,8 @@
 # Dev networking design
 
-This document describes how to wire the sandbox into a shared Docker network so the agent can reach your local DHIS2 (and other) dev containers directly, while still keeping a firewall on outbound internet traffic.
+This document describes how the sandbox is wired into a shared Docker network (`dev-net`) so the agent can reach your local DHIS2 (and other) dev containers directly, while still keeping a firewall on outbound internet traffic.
 
-**Status:** design only. Not implemented yet. Apply when ready to migrate from `--network=host` to bridge + firewall.
+**Status:** implemented. The sandbox attaches to `dev-net` by default; the firewall is on by default; `host.docker.internal` is allowlisted so host-running services (MCP servers, dev databases) are reachable too.
 
 ## Architecture
 
@@ -38,19 +38,17 @@ Key properties:
 - **Browser → DHIS2 admin UI** uses ports DHIS2 publishes to the host (e.g. `-p 8080:8080`).
 - **Browser → sandbox-started service** (e.g. brainstorming visual companion) uses a port the sandbox pre-publishes (see "Random port" below).
 
-## 1. Create the shared network
+## 1. The shared network
 
-One-time, on the host:
+`agent-sandbox start` automatically creates `dev-net` if it doesn't already exist, and attaches the sandbox to it. So this is normally one-time, automatic.
 
-```bash
-docker network create dev-net
-```
-
-You can also pick a specific subnet if you want a stable range to add to the firewall allowlist:
+If you want a specific subnet (e.g. to add a stable range to the firewall allowlist), pre-create it before starting any sandbox:
 
 ```bash
 docker network create --subnet=172.30.0.0/16 dev-net
 ```
+
+To opt out for a session, pass `--no-dev-net` to `agent-sandbox start`. The sandbox then runs on Docker's default bridge only.
 
 ## 2. Put DHIS2 dev containers on dev-net
 
@@ -103,15 +101,19 @@ If you run multiple DHIS2 instances, give each a distinct name (`dhis2-241`, `dh
 
 ## 3. Launch the sandbox on dev-net
 
-Future `agent-sandbox start` will accept `--network`:
+`agent-sandbox start` joins dev-net by default. To attach to additional networks:
 
 ```bash
-agent-sandbox start ~/Repos/dhis2-app --network dev-net
+agent-sandbox start ~/Repos/dhis2-app --network another-net
 ```
 
-Multiple networks (e.g. dev-net plus a separate db-net) can be attached by passing `--network` more than once.
+To opt out of dev-net entirely (use only Docker's default bridge):
 
-Inside the sandbox:
+```bash
+agent-sandbox start ~/Repos/my-app --no-dev-net
+```
+
+Inside the sandbox (default case):
 
 ```bash
 # These all work — Docker's embedded DNS resolves container names on dev-net
@@ -170,7 +172,21 @@ The egress firewall (adapted from Anthropic's `init-firewall.sh`) drops outbound
 
 Anthropic's script already does the "host network" detection. Extending it to all attached Docker networks is one extra step.
 
-## 6. CORS and auth inside dev-net
+## 6. MCP servers in the sandbox
+
+The sandbox can't invoke stdio-type MCP servers that live on the host: the MCP stdio transport spawns a subprocess (`python -m my_mcp` or similar) and talks over its stdin/stdout, but the host's `/opt/homebrew/...` paths and Python virtualenvs aren't visible inside the container. The host config can't be copied as-is.
+
+Two patterns that work:
+
+1. **Install the MCP server inside the sandbox.** Bake it into the Dockerfile (`pip install my_mcp`, `npm install -g my-mcp`) or install on demand from the shell. Configure Claude's `mcpServers` to point at the in-container binary. Any auth/state goes in the agent's named volume so it persists across container rebuilds.
+
+2. **Wrap the MCP server as a sibling container on `dev-net`.** Build a small image (often just `python:3.12-slim` with a pip install) that runs the MCP server with an HTTP transport. Start it once: `docker run -d --name my-mcp --network dev-net <image>`. From the sandbox, configure Claude to reach `http://my-mcp:PORT`. Survives sandbox rebuilds; works across multiple sandboxes simultaneously.
+
+Pattern 1 is simplest when the MCP server is something pip/npm-installable and you mostly use it from one sandbox at a time. Pattern 2 is better when it's experimental, hard to install, or you want it shared across sandboxes.
+
+`host.docker.internal` is **not** allowlisted in the firewall by default, so reaching a host-running MCP server over HTTP isn't possible without modifying `init-firewall.sh`. If you need that path, add `"host.docker.internal"` to the `DOMAINS` array, rebuild the image, and ensure the host service binds on `0.0.0.0` rather than `127.0.0.1`.
+
+## 7. CORS and auth inside dev-net
 
 A few gotchas when the agent is now reaching DHIS2 by container name rather than `localhost`:
 
@@ -178,7 +194,7 @@ A few gotchas when the agent is now reaching DHIS2 by container name rather than
 - **CORS allowlist on the DHIS2 side**: if you're testing a webapp running inside the sandbox (e.g. vite dev server on port 5173) against DHIS2, DHIS2 needs `http://localhost:5173` in its `corsWhitelist` (the dev server gets reached from the host browser, not from inside the network). The agent could also test via container-to-container HTTP without a browser, in which case CORS doesn't apply.
 - **DHIS2 SPA login**: as noted in the gaps document, the React-rendered login form on `/dhis-web-login/` doesn't accept programmatic form fills. Use `POST /api/auth/login` with JSON body to get a JSESSIONID cookie, then attach it to subsequent requests or to Playwright's browser context.
 
-## 7. Migration steps (when ready)
+## 8. Migration steps (historical — already applied)
 
 1. Create the network: `docker network create dev-net`.
 2. Update DHIS2 containers/compose to join `dev-net` (with stable `container_name`).
