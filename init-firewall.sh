@@ -96,6 +96,11 @@ DOMAINS=(
     "docs.dhis2.org"
     "api.dhis2.org"
     "play.dhis2.org"
+
+    # DuckDB extension repositories
+    "extensions.duckdb.org"
+    "community-extensions.duckdb.org"
+    "nightly-extensions.duckdb.org"
 )
 
 for domain in "${DOMAINS[@]}"; do
