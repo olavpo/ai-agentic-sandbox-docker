@@ -305,6 +305,25 @@ cmd_start() {
         echo "  docker exec $container_name ls /home/agent/.local/bin"
     fi
 
+    # Auto-sync host skills into the sandbox if it's a claude-capable one and
+    # the container's skills dir is empty. The agentic-sandbox-claude volume
+    # is shared across all claude sandboxes, so this naturally only runs once
+    # per machine — subsequent claude sandboxes inherit skills from the
+    # already-populated volume.
+    if [[ "$agent_choice" == "claude" || "$agent_choice" == "all" ]] \
+            && [[ -d "$HOME/.claude/skills" ]] \
+            && $installed; then
+        local container_skill_count
+        container_skill_count=$(docker exec "$container_name" sh -c \
+            'find /home/agent/.claude/skills -mindepth 1 -maxdepth 1 2>/dev/null | wc -l' \
+            2>/dev/null | tr -d ' ')
+        if [[ "$container_skill_count" == "0" ]]; then
+            echo "Syncing host skills into sandbox..."
+            cmd_sync_skills "$container_name" push >/dev/null 2>&1 || \
+                echo "  (skill sync failed; run 'agent-sandbox sync-skills push' manually)"
+        fi
+    fi
+
     echo ""
     echo "Sandbox ready. Attach with:"
     echo "  agent-sandbox shell $container_name"
