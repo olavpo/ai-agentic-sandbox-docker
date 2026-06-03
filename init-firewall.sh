@@ -94,8 +94,10 @@ DOMAINS=(
     "dhis2.org"
     "www.dhis2.org"
     "docs.dhis2.org"
-    "api.dhis2.org"
     "play.dhis2.org"
+    "play.im.dhis2.org"
+    "implement.im.dhis2.org"
+    "research.im.dhis2.org"
 
     # DuckDB extension repositories
     "extensions.duckdb.org"
