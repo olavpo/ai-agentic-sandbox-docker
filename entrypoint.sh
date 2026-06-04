@@ -15,7 +15,21 @@ export SSH_AUTH_SOCK=""
 # they're missing so the container still boots.
 if [[ "${SANDBOX_SKIP_FIREWALL:-}" != "1" ]]; then
     if sudo -n /usr/local/bin/init-firewall.sh; then
-        :
+        # Keep up with CDN edge IP rotation. Hosts behind CloudFront (e.g.
+        # docs.dhis2.org) return different edge IPs over time; the IPs we
+        # resolved at boot age out of the allowed-domains ipset, and after
+        # a while connections to those hosts start failing with "No route
+        # to host". The background loop re-resolves DOMAINS into the
+        # existing ipset (no rule flush, no in-flight disruption).
+        REFRESH_INTERVAL="${SANDBOX_FIREWALL_REFRESH_INTERVAL:-300}"
+        (
+            while true; do
+                sleep "$REFRESH_INTERVAL"
+                sudo -n /usr/local/bin/init-firewall.sh --refresh-only \
+                    >/tmp/firewall-refresh.log 2>&1 || true
+            done
+        ) &
+        disown
     else
         echo "[entrypoint] WARNING: firewall init failed. Container may have unrestricted egress."
         echo "[entrypoint]   To run without firewall on purpose, pass --host-network to agent-sandbox start."

@@ -7,6 +7,9 @@
 #   - Allows traffic to all attached Docker bridge networks (so the sandbox
 #     can talk to DHIS2/dev containers on a shared user-defined network like
 #     `dev-net` without the firewall getting in the way).
+#   - --refresh-only mode that re-resolves DOMAINS into the existing ipset
+#     without touching iptables rules. Used by entrypoint.sh's background
+#     refresh loop to keep up with CDN edge IP rotation (CloudFront, etc.).
 #   - Verification step checks both an allowed and a denied target.
 #
 # Runs inside the container at startup (invoked by entrypoint.sh).
@@ -15,47 +18,21 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-# 1. Preserve internal Docker DNS rules before flushing
-DOCKER_DNS_RULES=$(iptables-save -t nat 2>/dev/null | grep "127\.0\.0\.11" || true)
-
-# Flush existing rules and ipsets
-iptables -F
-iptables -X
-iptables -t nat -F
-iptables -t nat -X
-iptables -t mangle -F
-iptables -t mangle -X
-ipset destroy allowed-domains 2>/dev/null || true
-
-# Restore Docker DNS rules
-if [ -n "$DOCKER_DNS_RULES" ]; then
-    echo "Restoring Docker DNS rules..."
-    iptables -t nat -N DOCKER_OUTPUT 2>/dev/null || true
-    iptables -t nat -N DOCKER_POSTROUTING 2>/dev/null || true
-    echo "$DOCKER_DNS_RULES" | xargs -L 1 iptables -t nat
+# --- Mode ----------------------------------------------------------------
+# Default (no args): full init. Flushes iptables and the ipset, reapplies
+# the default-DROP egress policy and the allow-from-ipset rule, populates
+# the ipset, and verifies.
+#
+# --refresh-only: only re-resolves DOMAINS (and re-fetches GitHub IP ranges)
+# into the existing ipset. Skips the iptables/ipset teardown so in-flight
+# connections are not disrupted. Used by the background refresh loop in
+# entrypoint.sh.
+REFRESH_ONLY=0
+if [[ "${1:-}" == "--refresh-only" ]]; then
+    REFRESH_ONLY=1
 fi
 
-# Allow DNS and localhost loopback outbound (INPUT is permissive — see below).
-iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
-iptables -A OUTPUT -o lo -j ACCEPT
-
-# Create the ipset that will hold all allowed CIDRs
-ipset create allowed-domains hash:net
-
-# --- GitHub IP ranges (dynamic) ---
-echo "Fetching GitHub IP ranges..."
-gh_ranges=$(curl -s --max-time 10 https://api.github.com/meta || true)
-if [ -z "$gh_ranges" ] || ! echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
-    echo "WARNING: Failed to fetch GitHub IP ranges; GitHub will not be reachable from the sandbox."
-else
-    echo "Processing GitHub IPs..."
-    while read -r cidr; do
-        [[ "$cidr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]] || continue
-        ipset add allowed-domains "$cidr" 2>/dev/null || true
-    done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
-fi
-
-# --- Allowlisted domains, resolved to IPs ---
+# --- Allowed domains (resolved to IPs and added to the ipset) ------------
 DOMAINS=(
     # Anthropic
     "api.anthropic.com"
@@ -105,18 +82,75 @@ DOMAINS=(
     "nightly-extensions.duckdb.org"
 )
 
-for domain in "${DOMAINS[@]}"; do
-    echo "Resolving $domain..."
-    ips=$(dig +noall +answer +time=5 +tries=2 A "$domain" 2>/dev/null | awk '$4 == "A" {print $5}')
-    if [ -z "$ips" ]; then
-        echo "  WARNING: Failed to resolve $domain (skipping)"
-        continue
+# --- Resolve all source-of-truth hosts into the ipset --------------------
+# Idempotent: re-running only adds new IPs (existing entries are silently
+# ignored). Used both by the initial full-init below and by --refresh-only.
+populate_allowed_ips() {
+    # GitHub IP ranges (dynamic)
+    echo "Fetching GitHub IP ranges..."
+    gh_ranges=$(curl -s --max-time 10 https://api.github.com/meta || true)
+    if [ -z "$gh_ranges" ] || ! echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
+        echo "WARNING: Failed to fetch GitHub IP ranges; GitHub will not be reachable from the sandbox."
+    else
+        echo "Processing GitHub IPs..."
+        while read -r cidr; do
+            [[ "$cidr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]] || continue
+            ipset add allowed-domains "$cidr" 2>/dev/null || true
+        done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
     fi
-    while read -r ip; do
-        [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || continue
-        ipset add allowed-domains "$ip" 2>/dev/null || true
-    done < <(echo "$ips")
-done
+
+    # Allowlisted domains, resolved to IPs
+    for domain in "${DOMAINS[@]}"; do
+        echo "Resolving $domain..."
+        ips=$(dig +noall +answer +time=5 +tries=2 A "$domain" 2>/dev/null | awk '$4 == "A" {print $5}')
+        if [ -z "$ips" ]; then
+            echo "  WARNING: Failed to resolve $domain (skipping)"
+            continue
+        fi
+        while read -r ip; do
+            [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || continue
+            ipset add allowed-domains "$ip" 2>/dev/null || true
+        done < <(echo "$ips")
+    done
+}
+
+# --- Refresh-only path ---------------------------------------------------
+if [[ $REFRESH_ONLY -eq 1 ]]; then
+    populate_allowed_ips
+    exit 0
+fi
+
+# === Full init below =====================================================
+
+# 1. Preserve internal Docker DNS rules before flushing
+DOCKER_DNS_RULES=$(iptables-save -t nat 2>/dev/null | grep "127\.0\.0\.11" || true)
+
+# Flush existing rules and ipsets
+iptables -F
+iptables -X
+iptables -t nat -F
+iptables -t nat -X
+iptables -t mangle -F
+iptables -t mangle -X
+ipset destroy allowed-domains 2>/dev/null || true
+
+# Restore Docker DNS rules
+if [ -n "$DOCKER_DNS_RULES" ]; then
+    echo "Restoring Docker DNS rules..."
+    iptables -t nat -N DOCKER_OUTPUT 2>/dev/null || true
+    iptables -t nat -N DOCKER_POSTROUTING 2>/dev/null || true
+    echo "$DOCKER_DNS_RULES" | xargs -L 1 iptables -t nat
+fi
+
+# Allow DNS and localhost loopback outbound (INPUT is permissive — see below).
+iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+
+# Create the ipset that will hold all allowed CIDRs
+ipset create allowed-domains hash:net
+
+# Populate the ipset (GitHub IP ranges + resolved DOMAINS)
+populate_allowed_ips
 
 # --- Allow ALL attached Docker bridge network subnets ---
 # The container may be attached to multiple Docker networks (default bridge,
