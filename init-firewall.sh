@@ -195,6 +195,40 @@ iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 # Allow outbound to any IP in the allowed-domains ipset
 iptables -A OUTPUT -m set --match-set allowed-domains dst -j ACCEPT
 
+# --- DHIS2 instance broker on the host (optional) ---
+# When the host runs d2-broker (dhis2-docker-tools), agent-sandbox.sh passes
+# DHIS2_BROKER_URL into the container and entrypoint.sh forwards it to this
+# script. Open egress to exactly that host:port — not the whole host — so
+# the agent can manage disposable DHIS2 test instances while everything
+# else on the host stays unreachable.
+if [[ -n "${DHIS2_BROKER_URL:-}" ]]; then
+    broker_hostport="${DHIS2_BROKER_URL#*://}"
+    broker_hostport="${broker_hostport%%/*}"
+    broker_host="${broker_hostport%%:*}"
+    broker_port="${broker_hostport##*:}"
+    [[ "$broker_port" == "$broker_host" ]] && broker_port=80
+    if [[ "$broker_host" =~ ^[0-9.]+$ ]]; then
+        broker_ips="$broker_host"
+    else
+        # host.docker.internal is served by Docker's embedded DNS
+        # (127.0.0.11 in /etc/resolv.conf), so dig resolves it; getent
+        # covers /etc/hosts-based setups.
+        broker_ips=$(dig +noall +answer +time=5 +tries=2 A "$broker_host" 2>/dev/null | awk '$4 == "A" {print $5}')
+        if [ -z "$broker_ips" ]; then
+            broker_ips=$(getent hosts "$broker_host" | awk '{print $1}')
+        fi
+    fi
+    if [ -z "$broker_ips" ]; then
+        echo "WARNING: could not resolve DHIS2 broker host '$broker_host'; the broker will not be reachable."
+    else
+        while read -r ip; do
+            [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || continue
+            echo "Allowing DHIS2 broker at $ip:$broker_port"
+            iptables -A OUTPUT -d "$ip" -p tcp --dport "$broker_port" -j ACCEPT
+        done < <(echo "$broker_ips")
+    fi
+fi
+
 # Reject everything else explicitly so apps fail fast instead of hanging
 iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited
 

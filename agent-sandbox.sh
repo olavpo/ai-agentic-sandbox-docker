@@ -42,6 +42,11 @@ Options for `start`:
   --host-network         Opt out of bridge networking and firewall. Use --network=host
                          and skip iptables. SANDBOX_HOST_PORT is not set.
   --no-config            Don't mount agent config directories
+  --no-dhis2-broker      Don't wire up the DHIS2 instance broker (d2-broker).
+                         By default, if $DHIS2_BASE/_broker/tokens.json exists
+                         on the host, the agent-scoped token and broker URL are
+                         passed in as DHIS2_BROKER_TOKEN / DHIS2_BROKER_URL and
+                         the firewall opens that single host port.
 
 Examples:
   agent-sandbox start ~/projects/my-app
@@ -100,6 +105,7 @@ cmd_start() {
     local extra_ports=()
     local host_network=false
     local use_devnet=true
+    local use_dhis2_broker=true
     local agent_choice="claude"
 
     while [[ $# -gt 0 ]]; do
@@ -111,6 +117,7 @@ cmd_start() {
             -p|--port|--publish) extra_ports+=(-p "$2"); shift 2 ;;
             --host-network) host_network=true; shift ;;
             --no-config) mount_config=false; shift ;;
+            --no-dhis2-broker) use_dhis2_broker=false; shift ;;
             --agent)
                 agent_choice="$2"
                 case "$agent_choice" in
@@ -193,6 +200,25 @@ cmd_start() {
     local gh_token="${SANDBOX_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
     [[ -n "$gh_token" ]] && env_args+=(-e "GITHUB_TOKEN=$gh_token")
 
+    # --- DHIS2 instance broker (d2-broker from dhis2-docker-tools) ---
+    # If the host runs the broker, pass the agent-scoped token (restricted to
+    # agent-* instances and curated seeds) plus the URL into the sandbox. The
+    # in-container firewall reads DHIS2_BROKER_URL and opens egress to that
+    # single host:port.
+    local dhis2_broker_active=""
+    if $use_dhis2_broker && [[ -n "${DHIS2_BASE:-}" && -f "$DHIS2_BASE/_broker/tokens.json" ]]; then
+        local broker_agent_token
+        broker_agent_token=$(python3 -c \
+            'import json,sys; print(json.load(open(sys.argv[1]))["agent"]["token"])' \
+            "$DHIS2_BASE/_broker/tokens.json" 2>/dev/null || true)
+        if [[ -n "$broker_agent_token" ]]; then
+            local broker_url="${DHIS2_BROKER_URL:-http://host.docker.internal:${D2_BROKER_PORT:-9300}}"
+            env_args+=(-e "DHIS2_BROKER_URL=$broker_url")
+            env_args+=(-e "DHIS2_BROKER_TOKEN=$broker_agent_token")
+            dhis2_broker_active="$broker_url"
+        fi
+    fi
+
     # --- Networking + ports ---
     # Default: bridge (default Docker network), egress firewall on, plus a
     # random pre-published host port (SANDBOX_HOST_PORT) so the agent can
@@ -251,6 +277,7 @@ cmd_start() {
         echo "  Network: ${all_networks[*]:-bridge} (firewall on, egress allowlisted)"
         echo "  Host-visible port: http://localhost:$sandbox_port  (\$SANDBOX_HOST_PORT)"
     fi
+    [[ -n "$dhis2_broker_active" ]] && echo "  DHIS2 broker: $dhis2_broker_active (agent-scoped token)"
 
     docker run -dit \
         --name "$container_name" \

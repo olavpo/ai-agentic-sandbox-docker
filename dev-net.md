@@ -2,7 +2,7 @@
 
 This document describes how the sandbox is wired into a shared Docker network (`dev-net`) so the agent can reach your local DHIS2 (and other) dev containers directly, while still keeping a firewall on outbound internet traffic.
 
-**Status:** implemented. The sandbox attaches to `dev-net` by default; the firewall is on by default; `host.docker.internal` is allowlisted so host-running services (MCP servers, dev databases) are reachable too.
+**Status:** implemented. The sandbox attaches to `dev-net` by default; the firewall is on by default. `host.docker.internal` is **not** broadly allowlisted — the only host-running service reachable from the sandbox is the DHIS2 instance broker (`d2-broker`), and only on its single port, when configured (see section 9).
 
 ## Architecture
 
@@ -184,7 +184,7 @@ Two patterns that work:
 
 Pattern 1 is simplest when the MCP server is something pip/npm-installable and you mostly use it from one sandbox at a time. Pattern 2 is better when it's experimental, hard to install, or you want it shared across sandboxes.
 
-`host.docker.internal` is **not** allowlisted in the firewall by default, so reaching a host-running MCP server over HTTP isn't possible without modifying `init-firewall.sh`. If you need that path, add `"host.docker.internal"` to the `DOMAINS` array, rebuild the image, and ensure the host service binds on `0.0.0.0` rather than `127.0.0.1`.
+`host.docker.internal` is **not** allowlisted in the firewall by default, so reaching a host-running MCP server over HTTP isn't possible without modifying `init-firewall.sh`. If you need that path, add `"host.docker.internal"` to the `DOMAINS` array, rebuild the image, and ensure the host service binds on `0.0.0.0` rather than `127.0.0.1`. (For a port-restricted example of this pattern, see how `DHIS2_BROKER_URL` is handled in `init-firewall.sh` — section 9.)
 
 ## 7. CORS and auth inside dev-net
 
@@ -210,6 +210,38 @@ A few gotchas when the agent is now reaching DHIS2 by container name rather than
    - Accept `--host-network` as opt-out
 6. Verify firewall at startup: curl example.com (should fail), curl api.anthropic.com (should succeed), curl http://dhis2:8080 (should succeed once on dev-net).
 7. Update README to document the new flow.
+
+## 9. DHIS2 instance broker (d2-broker)
+
+The one sanctioned sandbox→host channel. The host runs
+[`d2-broker`](https://github.com/olavpo/dhis2-docker-tools) (from
+dhis2-docker-tools), a token-authenticated HTTP API over the `d2-*` instance
+scripts. Agents inside the sandbox can create, reset, start/stop and delete
+**disposable DHIS2 test instances** without any host shell or Docker access.
+
+How the pieces fit:
+
+- **Host**: `d2-broker install` runs the broker as a launchd agent on port
+  9300 (configurable via `D2_BROKER_PORT`). Tokens live in
+  `$DHIS2_BASE/_broker/tokens.json`.
+- **`agent-sandbox start`**: if that token file exists, the *agent-scoped*
+  token is passed into the container as `DHIS2_BROKER_TOKEN`, together with
+  `DHIS2_BROKER_URL` (default `http://host.docker.internal:9300`). Opt out
+  with `--no-dhis2-broker`.
+- **Firewall**: `init-firewall.sh` resolves the URL's host and allows egress
+  to **that host:port only** — the rest of the host stays unreachable. This
+  works because Docker Desktop's `host.docker.internal` resolves via the
+  embedded DNS.
+- **Agent guardrails** (enforced by the broker, not the sandbox): the agent
+  token can only manage instances named `agent-*`, can only seed them from
+  the curated `$DHIS2_BASE/_seeds/` directory (never real-data backups,
+  arbitrary paths, or URLs), and is capped in instance count. Created
+  instances join `dev-net`, so the agent reaches them at
+  `http://dhis2-<name>:8080`.
+
+Full API contract and security model: `broker.md` in the dhis2-docker-tools
+repo. Agent-facing usage doc: the `dhis2-instances` skill (synced into
+sandboxes like any other skill).
 
 ## See also
 

@@ -21,6 +21,7 @@ This repo currently uses the **Docker setup at the root** as the active path. A 
 - VS Code Dev Container support via `.devcontainer/devcontainer.json`
 - Pre-published host port (`SANDBOX_HOST_PORT`) for agent-started servers the user wants to open in their browser
 - Joinable to user-defined Docker networks for reaching dev containers (DHIS2, etc.) by name
+- Optional DHIS2 instance broker integration: agents can create/reset/delete disposable `agent-*` DHIS2 test instances through a token-scoped HTTP API on the host (see "DHIS2 test instances")
 
 ## Requirements
 
@@ -149,6 +150,20 @@ Two practical patterns inside the sandbox:
 - **Wrap the MCP server as a container on `dev-net`.** Run it once with `--network dev-net --name my-mcp`. Switch it to an HTTP transport and configure Claude to reach `http://my-mcp:PORT`.
 
 See `dev-net.md` for the full discussion.
+
+### DHIS2 test instances (d2-broker)
+
+If the host runs [`d2-broker`](https://github.com/olavpo/dhis2-docker-tools) (from the dhis2-docker-tools repo), sandboxed agents can ask the host to create, reset, start/stop and delete **disposable DHIS2 test instances** — without any host shell or Docker access.
+
+Wiring is automatic: when `$DHIS2_BASE/_broker/tokens.json` exists on the host, `agent-sandbox start` passes the **agent-scoped** token into the container (`DHIS2_BROKER_URL` + `DHIS2_BROKER_TOKEN`), and the firewall opens egress to that single `host.docker.internal` port only. Opt out with `--no-dhis2-broker`.
+
+The agent token is restricted by the broker itself: only instances named `agent-*`, only curated seed databases from `$DHIS2_BASE/_seeds/` (never real-data backups, host paths, or URLs), and a cap on concurrent instances. Created instances join `dev-net`, so the agent reaches them at `http://dhis2-<name>:8080`. See section 9 of `dev-net.md` and `broker.md` in dhis2-docker-tools.
+
+One-time host setup:
+
+```bash
+d2-broker install    # launchd service on port 9300 + tokens + Claude skill
+```
 
 If you need a specific extra port forwarded:
 

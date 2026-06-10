@@ -14,7 +14,9 @@ export SSH_AUTH_SOCK=""
 # Requires NET_ADMIN + NET_RAW caps on the container; skips cleanly if
 # they're missing so the container still boots.
 if [[ "${SANDBOX_SKIP_FIREWALL:-}" != "1" ]]; then
-    if sudo -n /usr/local/bin/init-firewall.sh; then
+    # DHIS2_BROKER_URL is forwarded explicitly because sudo resets the
+    # environment; the firewall opens egress to just that host:port.
+    if sudo -n env DHIS2_BROKER_URL="${DHIS2_BROKER_URL:-}" /usr/local/bin/init-firewall.sh; then
         # Keep up with CDN edge IP rotation. Hosts behind CloudFront (e.g.
         # docs.dhis2.org) return different edge IPs over time; the IPs we
         # resolved at boot age out of the allowed-domains ipset, and after
@@ -79,7 +81,19 @@ Outbound traffic is filtered by an iptables egress firewall. Allowed by default:
 
 You're on the **`dev-net`** Docker network by default. Sibling dev containers (e.g. a DHIS2 instance named `dhis2`, a database named `dhis2-db`, an MCP server wrapped as a container) are reachable by container name: `curl http://dhis2:8080/api/me`. Use `ip route` to see what subnets are attached.
 
-Services running on the user's host machine are **not** reachable from inside the sandbox by default. If you need to talk to something on the host, ask the user to either run it as a sibling container on `dev-net` or to install/run the equivalent inside the sandbox.
+`localhost:<port>` inside the sandbox is the sandbox itself — ports that other containers publish "to localhost" are published to the **host**, not to you. Prefer container names on `dev-net`. If a container isn't on dev-net but does publish a host port, that port is usually reachable on the bridge gateway IP (`ip route | awk '/default/ {print $3}'`).
+
+Services running on the user's host machine are **not** reachable from inside the sandbox, with one exception: the DHIS2 instance broker below, when configured. For anything else on the host, ask the user to either run it as a sibling container on `dev-net` or to install/run the equivalent inside the sandbox.
+
+### DHIS2 test instances (d2-broker)
+
+If the `DHIS2_BROKER_URL` and `DHIS2_BROKER_TOKEN` environment variables are set, the host runs **d2-broker** — an HTTP API through which you can create, reset, start/stop and delete disposable DHIS2 instances for testing. You may only manage instances named `agent-*`, and only seed them from the curated list at `GET /seeds` (or create them empty). All mutating calls return a job to poll. Quick check:
+
+```bash
+curl -s -H "Authorization: Bearer $DHIS2_BROKER_TOKEN" "$DHIS2_BROKER_URL/instances"
+```
+
+Created instances are reachable on dev-net at `http://dhis2-<name>:8080` (credentials usually `admin`/`district`). See the `dhis2-instances` skill for the full API. If the env vars are unset, this capability is unavailable — don't probe for it.
 
 ### Host-visible port: `$SANDBOX_HOST_PORT`
 
