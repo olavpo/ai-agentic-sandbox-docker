@@ -29,7 +29,7 @@ RUN echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$USERNAME \
 # Base system tools (includes iptables/ipset/aggregate for the egress firewall;
 # adb is the client for driving an Android emulator on the host — see
 # android-testing.md)
-RUN apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     adb \
     aggregate \
     bash \
