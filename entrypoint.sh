@@ -43,14 +43,19 @@ else
     echo "[entrypoint] SANDBOX_SKIP_FIREWALL=1 — running with unrestricted network."
 fi
 
-# --- Surface SANDBOX_HOST_PORT to the agent (container-local channels) ---
-# agent-sandbox.sh pre-allocates an unused port on the host and publishes it
-# both ways (-p PORT:PORT), then passes it via the env. Each sandbox gets
-# its own port, so the actual VALUE is kept container-local:
-#   - $SANDBOX_HOST_PORT env var (set by docker run)
+# --- Surface host-visible ports to the agent (container-local channels) ---
+# agent-sandbox.sh pre-allocates unused host ports and publishes them both ways
+# (-p PORT:PORT), then passes them via the env. Each sandbox gets its own
+# ports, so the actual VALUES are kept container-local:
+#   - $SANDBOX_HOST_PORT (+ $SANDBOX_HOST_PORT_2) env vars (set by docker run)
 #   - /etc/sandbox-info (plain-text dump for tools that don't read env)
+# SANDBOX_HOST_PORT_2 is optional so this stays correct against an older
+# agent-sandbox.sh that only publishes one port.
 if [[ -n "${SANDBOX_HOST_PORT:-}" ]]; then
-    echo "SANDBOX_HOST_PORT=$SANDBOX_HOST_PORT" | sudo tee /etc/sandbox-info >/dev/null
+    {
+        echo "SANDBOX_HOST_PORT=$SANDBOX_HOST_PORT"
+        [[ -n "${SANDBOX_HOST_PORT_2:-}" ]] && echo "SANDBOX_HOST_PORT_2=$SANDBOX_HOST_PORT_2"
+    } | sudo tee /etc/sandbox-info >/dev/null
 fi
 
 # --- Generic sandbox brief in ~/.claude/CLAUDE.md ---
@@ -114,18 +119,18 @@ The emulator runs on the **host**, not on dev-net. Inside an app on the emulator
 
 See the `dhis2-android-testing` skill for the full workflow. If `ADB_SERVER_SOCKET` is unset, there is no emulator wiring — don't probe for it.
 
-### Host-visible port: `$SANDBOX_HOST_PORT`
+### Host-visible ports: `$SANDBOX_HOST_PORT` (+ `$SANDBOX_HOST_PORT_2`)
 
-The sandbox pre-publishes one port to the user's host. Its value is in the `$SANDBOX_HOST_PORT` environment variable and in `/etc/sandbox-info`.
+The sandbox pre-publishes two ports to the user's host. Their values are in the `$SANDBOX_HOST_PORT` and `$SANDBOX_HOST_PORT_2` environment variables and in `/etc/sandbox-info`.
 
-**When you start a server the user should view in their browser** (visual companion, dev preview, Playwright report, etc.), bind it to `$SANDBOX_HOST_PORT`. The user opens `http://localhost:$SANDBOX_HOST_PORT` on their host.
+**When you start a server the user should view in their browser** (visual companion, dev preview, Playwright report, etc.), bind it to `$SANDBOX_HOST_PORT`. The user opens `http://localhost:$SANDBOX_HOST_PORT` on their host. Use `$SANDBOX_HOST_PORT_2` for a second host-visible service — e.g. an App Platform dev server on one and its proxy on the other.
 
 Examples:
 - `python -m http.server "$SANDBOX_HOST_PORT"`
 - For skills/tools with a `--port` flag: pass `"$SANDBOX_HOST_PORT"`.
 - For `vite` / `webpack-dev-server`: configure via `--port "$SANDBOX_HOST_PORT"` or the relevant config field.
 
-Only one host-visible port is auto-published per session. If you need another (e.g. an App Platform app that wants a dev-server port *and* a proxy port), ask the user to start the sandbox with extra `-p` flags: `agent-sandbox start -p 3000:3000 -p 8080:8080`.
+Two host-visible ports are auto-published per session (`$SANDBOX_HOST_PORT` and `$SANDBOX_HOST_PORT_2`). If you need a third, ask the user to start the sandbox with extra `-p` flags: `agent-sandbox start -p 5173:5173`.
 
 **Running a DHIS2 app for the user**: the dev server with hot reload (`d2 app:scripts start` / `yarn start`) is the default way to serve an app, both while developing and for manual testing — bind it to `$SANDBOX_HOST_PORT`. Installing the built zip (`POST /api/apps`) is a *verification* step for reviews/releases, not the serving mechanism. Mechanics live in the `dhis2-app-development` and `dhis2-app-review` skills.
 
