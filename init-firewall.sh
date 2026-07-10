@@ -45,6 +45,9 @@ DOMAINS=(
     "claude.ai"
     "downloads.claude.ai"
 
+    # Mistral (Vibe agent)
+    "api.mistral.ai"
+
     # Node / npm
     "registry.npmjs.org"
     "registry.yarnpkg.com"
