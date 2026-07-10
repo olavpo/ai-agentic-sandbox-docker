@@ -14,9 +14,12 @@ export SSH_AUTH_SOCK=""
 # Requires NET_ADMIN + NET_RAW caps on the container; skips cleanly if
 # they're missing so the container still boots.
 if [[ "${SANDBOX_SKIP_FIREWALL:-}" != "1" ]]; then
-    # DHIS2_BROKER_URL is forwarded explicitly because sudo resets the
-    # environment; the firewall opens egress to just that host:port.
-    if sudo -n env DHIS2_BROKER_URL="${DHIS2_BROKER_URL:-}" /usr/local/bin/init-firewall.sh; then
+    # DHIS2_BROKER_URL and ADB_SERVER_SOCKET are forwarded explicitly because
+    # sudo resets the environment; the firewall opens egress to just those
+    # host:ports.
+    if sudo -n env DHIS2_BROKER_URL="${DHIS2_BROKER_URL:-}" \
+            ADB_SERVER_SOCKET="${ADB_SERVER_SOCKET:-}" \
+            /usr/local/bin/init-firewall.sh; then
         # Keep up with CDN edge IP rotation. Hosts behind CloudFront (e.g.
         # docs.dhis2.org) return different edge IPs over time; the IPs we
         # resolved at boot age out of the allowed-domains ipset, and after
@@ -83,7 +86,7 @@ You're on the **`dev-net`** Docker network by default. Sibling dev containers (e
 
 `localhost:<port>` inside the sandbox is the sandbox itself — ports that other containers publish "to localhost" are published to the **host**, not to you. Prefer container names on `dev-net`. If a container isn't on dev-net but does publish a host port, that port is usually reachable on the bridge gateway IP (`ip route | awk '/default/ {print $3}'`).
 
-Services running on the user's host machine are **not** reachable from inside the sandbox, with one exception: the DHIS2 instance broker below, when configured. For anything else on the host, ask the user to either run it as a sibling container on `dev-net` or to install/run the equivalent inside the sandbox.
+Services running on the user's host machine are **not** reachable from inside the sandbox, with two exceptions when configured: the DHIS2 instance broker and the host's adb server (Android emulator), both below. For anything else on the host, ask the user to either run it as a sibling container on `dev-net` or to install/run the equivalent inside the sandbox.
 
 ### DHIS2 test instances (d2-broker)
 
@@ -94,6 +97,22 @@ curl -s -H "Authorization: Bearer $DHIS2_BROKER_TOKEN" "$DHIS2_BROKER_URL/instan
 ```
 
 Created instances are reachable on dev-net at `http://dhis2-<name>:8080` (credentials usually `admin`/`district`). See the `dhis2-instances` skill for the full API. If the env vars are unset, this capability is unavailable — don't probe for it.
+
+### Android emulator (adb)
+
+If the `ADB_SERVER_SOCKET` environment variable is set, the host runs an adb server (usually with an Android emulator attached) and the `adb` client in this sandbox already points at it — `adb devices` just works. You can:
+
+- install APKs: `adb install /path/to/app.apk`
+- see the screen: `adb exec-out screencap -p > /tmp/screen.png` (then read the PNG)
+- inspect the UI: `adb shell uiautomator dump /sdcard/ui.xml && adb shell cat /sdcard/ui.xml`
+- interact: `adb shell input tap X Y`, `input swipe ...`, `input text '...'`, `input keyevent ...`
+- read logs: `adb logcat -d`
+
+**Never run `adb kill-server`** — the server belongs to the host; killing it breaks the connection for everyone and you cannot restart it from in here.
+
+The emulator runs on the **host**, not on dev-net. Inside an app on the emulator, the host's loopback is `10.0.2.2` — so to point an Android app (e.g. the DHIS2 Capture app) at a broker-created DHIS2 instance, use `http://10.0.2.2:<http_port>`, where `http_port` comes from `GET $DHIS2_BROKER_URL/instances`. The dev-net URL (`http://dhis2-<name>:8080`) does NOT resolve on the emulator.
+
+See the `dhis2-android-testing` skill for the full workflow. If `ADB_SERVER_SOCKET` is unset, there is no emulator wiring — don't probe for it.
 
 ### Host-visible port: `$SANDBOX_HOST_PORT`
 
@@ -106,7 +125,9 @@ Examples:
 - For skills/tools with a `--port` flag: pass `"$SANDBOX_HOST_PORT"`.
 - For `vite` / `webpack-dev-server`: configure via `--port "$SANDBOX_HOST_PORT"` or the relevant config field.
 
-Only one host-visible port is auto-published per session. If you need another, ask the user to start the sandbox with `agent-sandbox start -p HOST:CONTAINER`.
+Only one host-visible port is auto-published per session. If you need another (e.g. an App Platform app that wants a dev-server port *and* a proxy port), ask the user to start the sandbox with extra `-p` flags: `agent-sandbox start -p 3000:3000 -p 8080:8080`.
+
+**Running a DHIS2 app for the user**: the dev server with hot reload (`d2 app:scripts start` / `yarn start`) is the default way to serve an app, both while developing and for manual testing — bind it to `$SANDBOX_HOST_PORT`. Installing the built zip (`POST /api/apps`) is a *verification* step for reviews/releases, not the serving mechanism. Mechanics live in the `dhis2-app-development` and `dhis2-app-review` skills.
 
 ### Git
 
@@ -115,7 +136,7 @@ HTTPS only (SSH is not installed). `GITHUB_TOKEN` is set if the user provided on
 ### Filesystem
 
 - Your project is mounted at `/<project-name>` (whatever directory you start in).
-- Skills live under `~/.claude/skills/`. If a skill is missing, ask the user to run `agent-sandbox sync-skills push` outside the container.
+- Skills live under `~/.claude/skills/`. If a skill is missing, ask the user to run `agent-sandbox sync-skills push` outside the container. **Edits you make to a skill *inside* the sandbox don't persist** — `~/.claude/skills/` is synced from the host. Apply skill changes host-side (the masters), or they're lost on the next sync.
 - You can write freely under `/<project-name>`, `/tmp`, and `~/`. The host filesystem outside the project mount is not accessible.
 
 ### Permissions
@@ -165,6 +186,22 @@ esac
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then
     git config --global credential.helper '!f() { echo "username=x-token"; echo "password=$GITHUB_TOKEN"; }; f'
 fi
+
+# --- Git identity ---
+# Without this, the first commit fails with "Please tell me who you are".
+# Overridable via GIT_AUTHOR_NAME / GIT_AUTHOR_EMAIL; otherwise a generic
+# sandbox identity so commits don't hard-fail. The user pushes from the host,
+# where their real identity applies.
+git config --global --get user.email >/dev/null 2>&1 || \
+    git config --global user.email "${GIT_AUTHOR_EMAIL:-agent@agentic-sandbox.local}"
+git config --global --get user.name >/dev/null 2>&1 || \
+    git config --global user.name "${GIT_AUTHOR_NAME:-Agent Sandbox}"
+
+# --- Ignore host-OS litter globally (macOS bind mounts drop .DS_Store etc.) ---
+if [[ ! -f "$AGENT_HOME/.gitignore_global" ]]; then
+    printf '.DS_Store\n._*\nThumbs.db\n' > "$AGENT_HOME/.gitignore_global"
+fi
+git config --global core.excludesfile "$AGENT_HOME/.gitignore_global"
 
 # --- cd into the project ---
 if [[ -n "${PROJECT_NAME:-}" && -d "/$PROJECT_NAME" ]]; then

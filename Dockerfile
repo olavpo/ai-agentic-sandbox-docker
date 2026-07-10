@@ -26,8 +26,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends locales sudo \
 RUN echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME
 
-# Base system tools (includes iptables/ipset/aggregate for the egress firewall)
+# Base system tools (includes iptables/ipset/aggregate for the egress firewall;
+# adb is the client for driving an Android emulator on the host — see
+# android-testing.md)
 RUN apt-get install -y --no-install-recommends \
+    adb \
     aggregate \
     bash \
     bash-completion \
@@ -54,10 +57,12 @@ RUN apt-get install -y --no-install-recommends \
     make \
     man-db \
     nano \
+    postgresql-client \
     procps \
     ripgrep \
     sed \
     shellcheck \
+    socat \
     tree \
     unzip \
     vim \

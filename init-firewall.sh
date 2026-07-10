@@ -57,10 +57,17 @@ DOMAINS=(
     "playwright.azureedge.net"
     "cdn.playwright.dev"
 
-    # apt / Debian / Node binary distribution
+    # apt / Node binary distribution.
+    # Base image is ubuntu:24.04: arm64 builds pull from ports.ubuntu.com,
+    # amd64 from archive/security.ubuntu.com. deb.debian.org stays for any
+    # Debian-sourced packages (e.g. some tool repos). Without the Ubuntu
+    # mirrors, runtime `apt-get install` fails inside the sandbox.
     "deb.nodesource.com"
     "deb.debian.org"
     "security.debian.org"
+    "ports.ubuntu.com"
+    "archive.ubuntu.com"
+    "security.ubuntu.com"
 
     # VS Code marketplace (devcontainer use)
     "marketplace.visualstudio.com"
@@ -195,38 +202,58 @@ iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 # Allow outbound to any IP in the allowed-domains ipset
 iptables -A OUTPUT -m set --match-set allowed-domains dst -j ACCEPT
 
-# --- DHIS2 instance broker on the host (optional) ---
-# When the host runs d2-broker (dhis2-docker-tools), agent-sandbox.sh passes
-# DHIS2_BROKER_URL into the container and entrypoint.sh forwards it to this
-# script. Open egress to exactly that host:port — not the whole host — so
-# the agent can manage disposable DHIS2 test instances while everything
-# else on the host stays unreachable.
+# --- Pinpoint sandbox→host exemptions ---
+# The host itself is not on the allowlist; the only sanctioned channels are
+# single host:port exemptions for specific services the sandbox is meant to
+# reach (the DHIS2 instance broker, the adb server for the Android emulator).
+# agent-sandbox.sh passes the relevant env vars into the container and
+# entrypoint.sh forwards them to this script.
+allow_host_port() {
+    local label="$1" host="$2" port="$3"
+    local ips
+    if [[ "$host" =~ ^[0-9.]+$ ]]; then
+        ips="$host"
+    else
+        # host.docker.internal is served by Docker's embedded DNS
+        # (127.0.0.11 in /etc/resolv.conf), so dig resolves it; getent
+        # covers /etc/hosts-based setups.
+        ips=$(dig +noall +answer +time=5 +tries=2 A "$host" 2>/dev/null | awk '$4 == "A" {print $5}')
+        if [ -z "$ips" ]; then
+            ips=$(getent hosts "$host" | awk '{print $1}')
+        fi
+    fi
+    if [ -z "$ips" ]; then
+        echo "WARNING: could not resolve $label host '$host'; it will not be reachable."
+        return
+    fi
+    while read -r ip; do
+        [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || continue
+        echo "Allowing $label at $ip:$port"
+        iptables -A OUTPUT -d "$ip" -p tcp --dport "$port" -j ACCEPT
+    done < <(echo "$ips")
+}
+
+# DHIS2 instance broker (d2-broker on the host): lets the agent manage
+# disposable DHIS2 test instances while everything else on the host stays
+# unreachable.
 if [[ -n "${DHIS2_BROKER_URL:-}" ]]; then
     broker_hostport="${DHIS2_BROKER_URL#*://}"
     broker_hostport="${broker_hostport%%/*}"
     broker_host="${broker_hostport%%:*}"
     broker_port="${broker_hostport##*:}"
     [[ "$broker_port" == "$broker_host" ]] && broker_port=80
-    if [[ "$broker_host" =~ ^[0-9.]+$ ]]; then
-        broker_ips="$broker_host"
-    else
-        # host.docker.internal is served by Docker's embedded DNS
-        # (127.0.0.11 in /etc/resolv.conf), so dig resolves it; getent
-        # covers /etc/hosts-based setups.
-        broker_ips=$(dig +noall +answer +time=5 +tries=2 A "$broker_host" 2>/dev/null | awk '$4 == "A" {print $5}')
-        if [ -z "$broker_ips" ]; then
-            broker_ips=$(getent hosts "$broker_host" | awk '{print $1}')
-        fi
-    fi
-    if [ -z "$broker_ips" ]; then
-        echo "WARNING: could not resolve DHIS2 broker host '$broker_host'; the broker will not be reachable."
-    else
-        while read -r ip; do
-            [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || continue
-            echo "Allowing DHIS2 broker at $ip:$broker_port"
-            iptables -A OUTPUT -d "$ip" -p tcp --dport "$broker_port" -j ACCEPT
-        done < <(echo "$broker_ips")
-    fi
+    allow_host_port "DHIS2 broker" "$broker_host" "$broker_port"
+fi
+
+# adb server on the host (Android emulator testing, see android-testing.md).
+# ADB_SERVER_SOCKET has the form tcp:host:port and is read natively by the
+# in-container adb client.
+if [[ -n "${ADB_SERVER_SOCKET:-}" ]]; then
+    adb_hostport="${ADB_SERVER_SOCKET#tcp:}"
+    adb_host="${adb_hostport%%:*}"
+    adb_port="${adb_hostport##*:}"
+    [[ "$adb_port" == "$adb_host" ]] && adb_port=5037
+    allow_host_port "adb server" "$adb_host" "$adb_port"
 fi
 
 # Reject everything else explicitly so apps fail fast instead of hanging
