@@ -2,7 +2,7 @@
 
 This document describes how the sandbox is wired into a shared Docker network (`dev-net`) so the agent can reach your local DHIS2 (and other) dev containers directly, while still keeping a firewall on outbound internet traffic.
 
-**Status:** implemented. The sandbox attaches to `dev-net` by default; the firewall is on by default. `host.docker.internal` is **not** broadly allowlisted — the only host-running service reachable from the sandbox is the DHIS2 instance broker (`d2-broker`), and only on its single port, when configured (see section 9).
+**Status:** implemented. The sandbox attaches to `dev-net` by default; the firewall is on by default. `host.docker.internal` is **not** broadly allowlisted — the only host-running services reachable from the sandbox are the DHIS2 instance broker (`d2-broker`, section 9) and the adb server for Android emulator testing (section 10), each on its single port, when configured.
 
 ## Architecture
 
@@ -242,6 +242,35 @@ How the pieces fit:
 Full API contract and security model: `broker.md` in the dhis2-docker-tools
 repo. Agent-facing usage doc: the `dhis2-instances` skill (synced into
 sandboxes like any other skill).
+
+## 10. Android emulator testing (adb)
+
+The second sanctioned sandbox→host channel, following the same pattern as the
+broker. The Android emulator cannot run inside the sandbox (no nested
+virtualization in Docker's Linux VM on macOS), so it runs on the host and the
+sandbox drives it remotely through the host's adb server:
+
+- **Host**: an Android emulator (AVD) plus an adb server on port 5037. The
+  default loopback bind is enough — Docker Desktop forwards
+  `host.docker.internal` traffic from the host's loopback, so nothing needs
+  to listen on external interfaces.
+- **`agent-sandbox start`**: if something is listening on the host's adb port
+  (5037, override with `SANDBOX_ADB_PORT`), the socket is passed into the
+  container as `ADB_SERVER_SOCKET=tcp:host.docker.internal:5037`. Opt out
+  with `--no-adb`.
+- **Firewall**: `init-firewall.sh` opens egress to **that host:port only**,
+  exactly like the broker exemption.
+- **In the sandbox**: the `adb` client (baked into the image) reads
+  `ADB_SERVER_SOCKET` natively, so `adb devices`, `adb install`,
+  `adb exec-out screencap`, `adb shell input ...` etc. all hit the host's
+  emulator with no further setup.
+- **App → DHIS2**: the emulator is on the host, not on dev-net. Apps on the
+  emulator reach broker-created DHIS2 instances via the host-published port:
+  `http://10.0.2.2:<http_port>` (the broker's `GET /instances` returns
+  `http_port` per instance).
+
+Host setup (emulator install, launchd service, getting the APK):
+`android-testing.md` in this repo.
 
 ## See also
 

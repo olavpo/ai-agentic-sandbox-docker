@@ -37,8 +37,9 @@ Options for `start`:
                          The sandbox is already on `dev-net` by default; use this
                          to also join a second network.
   --no-dev-net           Skip attaching to dev-net (the default shared network).
-  -p, --port HOST:CONT   Publish an additional port (repeatable). A random port from
-                         49200-49300 is always published as SANDBOX_HOST_PORT.
+  -p, --port HOST:CONT   Publish an additional port (repeatable). Two random ports from
+                         49200-49300 are always published as SANDBOX_HOST_PORT and
+                         SANDBOX_HOST_PORT_2.
   --host-network         Opt out of bridge networking and firewall. Use --network=host
                          and skip iptables. SANDBOX_HOST_PORT is not set.
   --no-config            Don't mount agent config directories
@@ -47,6 +48,11 @@ Options for `start`:
                          on the host, the agent-scoped token and broker URL are
                          passed in as DHIS2_BROKER_TOKEN / DHIS2_BROKER_URL and
                          the firewall opens that single host port.
+  --no-adb               Don't wire up the host's adb server (Android emulator
+                         testing). By default, if an adb server is listening on
+                         the host (port 5037, override with SANDBOX_ADB_PORT),
+                         ADB_SERVER_SOCKET is passed in and the firewall opens
+                         that single host port. See android-testing.md.
 
 Examples:
   agent-sandbox start ~/projects/my-app
@@ -69,11 +75,15 @@ USAGE
 
 # Find an unused TCP port in the 49200-49300 range.
 # Echoes the port number on stdout, or returns non-zero if no port is free.
+# An optional first argument is a port to skip (so callers can pick a second,
+# distinct port that the not-yet-bound first pick would otherwise collide with).
 pick_port() {
+    local exclude="${1:-}"
     local candidate
     local attempts=30
     for ((i=0; i<attempts; i++)); do
         candidate=$((49200 + RANDOM % 101))
+        [[ -n "$exclude" && "$candidate" == "$exclude" ]] && continue
         # Skip ports already in use on the host (any state, not just LISTEN, to
         # avoid TIME_WAIT collisions when re-creating sandboxes quickly).
         if ! lsof -nP -iTCP:"$candidate" >/dev/null 2>&1; then
@@ -106,6 +116,7 @@ cmd_start() {
     local host_network=false
     local use_devnet=true
     local use_dhis2_broker=true
+    local use_adb=true
     local agent_choice="claude"
 
     while [[ $# -gt 0 ]]; do
@@ -118,6 +129,7 @@ cmd_start() {
             --host-network) host_network=true; shift ;;
             --no-config) mount_config=false; shift ;;
             --no-dhis2-broker) use_dhis2_broker=false; shift ;;
+            --no-adb) use_adb=false; shift ;;
             --agent)
                 agent_choice="$2"
                 case "$agent_choice" in
@@ -219,6 +231,24 @@ cmd_start() {
         fi
     fi
 
+    # --- Android emulator / adb on the host (android-testing.md) ---
+    # If an adb server is listening on the host, pass its socket into the
+    # sandbox so the in-container adb client (and anything built on it) can
+    # drive the host's Android emulator. Docker Desktop forwards
+    # host.docker.internal traffic from the host's loopback, so the default
+    # loopback-bound adb server is reachable — no all-interfaces bind needed.
+    # The in-container firewall reads ADB_SERVER_SOCKET and opens egress to
+    # that single host:port.
+    local adb_active=""
+    if $use_adb; then
+        local adb_port="${SANDBOX_ADB_PORT:-5037}"
+        if lsof -nP -iTCP:"$adb_port" -sTCP:LISTEN >/dev/null 2>&1; then
+            local adb_socket="${SANDBOX_ADB_SERVER:-tcp:host.docker.internal:${adb_port}}"
+            env_args+=(-e "ADB_SERVER_SOCKET=$adb_socket")
+            adb_active="$adb_socket"
+        fi
+    fi
+
     # --- Networking + ports ---
     # Default: bridge (default Docker network), egress firewall on, plus a
     # random pre-published host port (SANDBOX_HOST_PORT) so the agent can
@@ -234,18 +264,29 @@ cmd_start() {
     local cap_args=()
     local port_args=()
     local sandbox_port=""
+    local sandbox_port2=""
 
     if $host_network; then
         net_args=(--network=host)
         env_args+=(-e "SANDBOX_SKIP_FIREWALL=1")
     else
         cap_args=(--cap-add=NET_ADMIN --cap-add=NET_RAW)
+        # Two host-visible ports by default: enough for an App Platform app that
+        # serves a dev server on one and its proxy on the other, without the
+        # user having to remember explicit -p flags. Use -p for a third+.
         if ! sandbox_port=$(pick_port); then
             echo "Error: could not find a free port in 49200-49300 on the host." >&2
             exit 1
         fi
         port_args+=(-p "${sandbox_port}:${sandbox_port}")
         env_args+=(-e "SANDBOX_HOST_PORT=$sandbox_port")
+
+        if ! sandbox_port2=$(pick_port "$sandbox_port"); then
+            echo "Error: could not find a second free port in 49200-49300 on the host." >&2
+            exit 1
+        fi
+        port_args+=(-p "${sandbox_port2}:${sandbox_port2}")
+        env_args+=(-e "SANDBOX_HOST_PORT_2=$sandbox_port2")
 
         # Build the effective network list: dev-net (default) + any user --network entries.
         # docker run only accepts one --network, so the first one goes there
@@ -275,9 +316,10 @@ cmd_start() {
         echo "  Network: host (firewall disabled)"
     else
         echo "  Network: ${all_networks[*]:-bridge} (firewall on, egress allowlisted)"
-        echo "  Host-visible port: http://localhost:$sandbox_port  (\$SANDBOX_HOST_PORT)"
+        echo "  Host-visible ports: http://localhost:$sandbox_port (\$SANDBOX_HOST_PORT), http://localhost:$sandbox_port2 (\$SANDBOX_HOST_PORT_2)"
     fi
     [[ -n "$dhis2_broker_active" ]] && echo "  DHIS2 broker: $dhis2_broker_active (agent-scoped token)"
+    [[ -n "$adb_active" ]] && echo "  Android adb: $adb_active"
 
     docker run -dit \
         --name "$container_name" \

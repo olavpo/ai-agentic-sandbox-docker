@@ -22,6 +22,7 @@ This repo currently uses the **Docker setup at the root** as the active path. A 
 - Pre-published host port (`SANDBOX_HOST_PORT`) for agent-started servers the user wants to open in their browser
 - Joinable to user-defined Docker networks for reaching dev containers (DHIS2, etc.) by name
 - Optional DHIS2 instance broker integration: agents can create/reset/delete disposable `agent-*` DHIS2 test instances through a token-scoped HTTP API on the host (see "DHIS2 test instances")
+- Optional Android emulator testing: agents drive an emulator on the host through its adb server — install APKs, take screenshots, tap/swipe/type (see `android-testing.md`)
 
 ## Requirements
 
@@ -164,6 +165,12 @@ One-time host setup:
 ```bash
 d2-broker install    # launchd service on port 9300 + tokens + Claude skill
 ```
+
+### Android emulator testing (adb)
+
+If an adb server is listening on the host (port 5037), `agent-sandbox start` passes `ADB_SERVER_SOCKET=tcp:host.docker.internal:5037` into the container and the firewall opens egress to that single port. The in-container `adb` client reads the variable natively, so the agent can install APKs on the host's Android emulator, take screenshots, inspect the UI hierarchy and tap/swipe/type — enough to test the DHIS2 Android app against a broker-created DHIS2 instance (which the app reaches at `http://10.0.2.2:<http_port>`). Opt out with `--no-adb`.
+
+Host setup (emulator install, adb launchd service, getting the APK): see `android-testing.md`.
 
 If you need a specific extra port forwarded:
 
