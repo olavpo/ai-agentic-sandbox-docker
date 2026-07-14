@@ -187,6 +187,36 @@ case "$AGENT_CHOICE" in
         ;;
 esac
 
+# --- Claude Code plugins ---
+# Install marketplace plugins natively in the container (skills come from the
+# plugin, namespaced e.g. superpowers:brainstorming, and auto-update) rather
+# than syncing the host's materialized skill copies. The marketplace is a
+# public GitHub repo (GitHub is allowlisted in the firewall), so this works
+# from inside the sandbox. Both commands are idempotent, so it's safe to run
+# on every boot. Plugin state lives in the persistent ~/.claude volume.
+#
+# SANDBOX_CLAUDE_PLUGINS is a space-separated list of plugin@marketplace ids;
+# SANDBOX_CLAUDE_MARKETPLACES is the matching list of marketplace sources to
+# register first. Defaults install the superpowers skill set. Set either to
+# an empty string to skip.
+if [[ "$AGENT_CHOICE" == "claude" || "$AGENT_CHOICE" == "all" ]] \
+        && command -v claude &>/dev/null; then
+    marketplaces="${SANDBOX_CLAUDE_MARKETPLACES-anthropics/claude-plugins-official}"
+    plugins="${SANDBOX_CLAUDE_PLUGINS-superpowers@claude-plugins-official}"
+    for mkt in $marketplaces; do
+        claude plugin marketplace add "$mkt" 2>/dev/null \
+            || echo "[entrypoint] note: marketplace add '$mkt' failed (already added, or offline)"
+    done
+    for plg in $plugins; do
+        if claude plugin list 2>/dev/null | grep -q "${plg%@*}"; then
+            continue   # already installed
+        fi
+        echo "[entrypoint] Installing Claude plugin: $plg"
+        claude plugin install "$plg" --scope user 2>/dev/null \
+            || echo "[entrypoint] WARNING: plugin install '$plg' failed."
+    done
+fi
+
 # --- Git HTTPS auth ---
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then
     git config --global credential.helper '!f() { echo "username=x-token"; echo "password=$GITHUB_TOKEN"; }; f'

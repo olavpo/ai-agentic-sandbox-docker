@@ -16,7 +16,7 @@ This repo currently uses the **Docker setup at the root** as the active path. A 
 - Multiple AI providers: Anthropic, OpenAI, Mistral, GitHub
 - Non-root `agent` user with passwordless sudo
 - Named Docker volumes for persistent, isolated agent config
-- Bidirectional skill sync between host and container (`sync-skills`)
+- Bidirectional skill sync between host and container (`sync-skills`) — pushes only *symlinked* skills (those the ai-skills manager has enabled); marketplace plugins like superpowers are installed natively in the container instead (see "Claude plugins")
 - HTTPS-only git access (SSH disabled for security)
 - VS Code Dev Container support via `.devcontainer/devcontainer.json`
 - Pre-published host port (`SANDBOX_HOST_PORT`) for agent-started servers the user wants to open in their browser
@@ -151,6 +151,21 @@ Two practical patterns inside the sandbox:
 - **Wrap the MCP server as a container on `dev-net`.** Run it once with `--network dev-net --name my-mcp`. Switch it to an HTTP transport and configure Claude to reach `http://my-mcp:PORT`.
 
 See `dev-net.md` for the full discussion.
+
+### Claude plugins
+
+Marketplace plugins (e.g. [superpowers](https://github.com/anthropics/claude-plugins-official)) are installed **natively** in the container, not synced from the host. On first `claude`/`all` start the entrypoint runs `claude plugin marketplace add` + `claude plugin install` for a configurable set; the marketplace is a public GitHub repo, which the egress firewall already allows. Skills then load namespaced (`superpowers:brainstorming`) and update with the plugin. Plugin state persists in the `agentic-sandbox-claude` volume, and the install commands are idempotent so they're cheap to re-run each boot.
+
+Defaults install the superpowers skill set. Override at start:
+
+```bash
+# add more plugins / marketplaces (space-separated plugin@marketplace ids)
+agent-sandbox start ~/Repos/app -e SANDBOX_CLAUDE_PLUGINS="superpowers@claude-plugins-official other@mkt"
+# or disable plugin install entirely
+agent-sandbox start ~/Repos/app -e SANDBOX_CLAUDE_PLUGINS=
+```
+
+This is why `sync-skills` only pushes *symlinked* skills: the real (non-symlink) directories in `~/.claude/skills` are plugin-materialized copies, and the sandbox gets those from the plugin instead.
 
 ### DHIS2 test instances (d2-broker)
 

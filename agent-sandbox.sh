@@ -541,6 +541,18 @@ cmd_sync_skills() {
     local host_list container_list
     host_list=$(_list_host_skills "$host_skills_dir")
     container_list=$(docker exec "$container_name" find "$container_skills_dir" -maxdepth 1 -mindepth 1 -printf '%f\n' 2>/dev/null | sort || true)
+    # Hide container skills that exist on host but aren't syncable (e.g. a
+    # stray real directory) — they'd otherwise nag as "pull to sync" forever.
+    if [[ -n "$container_list" ]]; then
+        container_list=$(while IFS= read -r s; do
+            [[ -n "$s" ]] || continue
+            if [[ -e "$host_skills_dir/$s" || -L "$host_skills_dir/$s" ]] \
+                    && ! _skill_syncable "$host_skills_dir" "$s"; then
+                continue
+            fi
+            echo "$s"
+        done <<< "$container_list")
+    fi
 
     local only_host only_container both
     only_host=$(comm -23 <(echo "$host_list") <(echo "$container_list") | grep -v '^$' || true)
@@ -584,7 +596,22 @@ cmd_sync_skills() {
     esac
 }
 
-# List skill names on host (resolves symlinks, skips hidden files)
+# Only symlinked skills sync into sandboxes. The ai-skills manager
+# (~/Repos/ai-skills/manage.py) enables a skill by symlinking it into
+# ~/.claude/skills, so a symlink means "deliberately enabled" — that includes
+# direct symlinks to other repos (dhis2-instances, dhis2-android-testing).
+#
+# Real (non-symlink) directories are NOT synced. On the host these are
+# plugin-materialized skills (e.g. the superpowers set) or strays; sandboxes
+# get plugin skills natively instead — the entrypoint installs the same
+# plugins via `claude plugin install` from the marketplace — so copying the
+# materialized dirs would just duplicate them. See entrypoint.sh.
+_skill_syncable() {
+    local dir="$1" name="$2"
+    [[ -L "$dir/$name" ]]
+}
+
+# List syncable skill names on host (skips hidden files and non-syncable dirs)
 _list_host_skills() {
     local dir="$1"
     [[ -d "$dir" ]] || return
@@ -593,6 +620,7 @@ _list_host_skills() {
         local name
         name="$(basename "$entry")"
         [[ "$name" == .* ]] && continue
+        _skill_syncable "$dir" "$name" || continue
         echo "$name"
     done | sort
 }
@@ -612,6 +640,7 @@ _sync_push() {
         local name
         name="$(basename "$entry")"
         [[ "$name" == .* ]] && continue
+        _skill_syncable "$host_dir" "$name" || continue
         # cp -rL dereferences symlinks and copies content
         cp -rL "$entry" "$tmpdir/$name"
         count=$((count + 1))
