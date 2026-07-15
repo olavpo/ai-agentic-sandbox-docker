@@ -86,6 +86,12 @@ DOMAINS=(
     "implement.im.dhis2.org"
     "research.im.dhis2.org"
 
+    # SonarCloud (web/API + scanner binary downloads)
+    "sonarcloud.io"
+    "api.sonarcloud.io"
+    "scanner.sonarcloud.io"
+    "binaries.sonarsource.com"
+
     # DuckDB extension repositories
     "extensions.duckdb.org"
     "community-extensions.duckdb.org"
