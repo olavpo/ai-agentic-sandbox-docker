@@ -10,6 +10,12 @@
 # agent-sandbox.
 set -euo pipefail
 
+# Resolve the repo directory through the /usr/local/bin symlink, so the
+# sibling agent-sandbox.sh is found even if the PATH symlink for
+# agent-sandbox is missing or stale (e.g. after a repo rename).
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}")")" && pwd)"
+AGENT_SANDBOX="$SCRIPT_DIR/agent-sandbox.sh"
+
 PROJECT_LABEL="agentic-sandbox-project"
 
 usage() {
@@ -138,7 +144,7 @@ cmd_launch() {
         docker start "$container" >/dev/null
     else
         echo "Creating sandbox '$container' for $project_dir..."
-        agent-sandbox start "$project_dir" -n "$container" --agent "$agent"
+        "$AGENT_SANDBOX" start "$project_dir" -n "$container" --agent "$agent"
     fi
 
     # Workdir: the full-path mount (PROJECT_DIR), or the legacy /<basename>
