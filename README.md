@@ -38,18 +38,21 @@ cp .env.example .env
 # 2. Build the sandbox image
 agent-sandbox build
 
-# 3. Start a sandbox with your project directory
-agent-sandbox start /path/to/your/project
+# 3. cd to your project and launch — sandbox is created/resumed automatically
+cd ~/projects/my-app
+sbx
 
-# 4. Open an interactive shell inside the sandbox
-agent-sandbox shell
-
-# 5. Log in to your agents (first time only)
+# 4. Log in to your agents (first time only)
 claude login
 gh auth login
 ```
 
-The `/usr/local/bin/agent-sandbox` symlink points to `agent-sandbox.sh` in this directory.
+Symlinks in `/usr/local/bin` point into this directory:
+
+```bash
+ln -s ~/Repos/ai-sandbox/agent-sandbox.sh /usr/local/bin/agent-sandbox
+ln -s ~/Repos/ai-sandbox/sbx /usr/local/bin/sbx
+```
 
 ## Usage
 
@@ -77,27 +80,31 @@ Options (for `start`):
   --no-config               Skip mounting agent config volumes
 ```
 
-## Convenience wrappers: `claude-sandboxed` / `vibe-sandboxed`
+## Everyday use: `sbx`
 
-For the common case of "give me a sandbox running a specific agent" there are two short-name wrappers backed by a single script (`sandboxed.sh`):
-
-```bash
-claude-sandboxed                 # list existing claude sandboxes
-claude-sandboxed -n project-x    # create-or-resume "claude-project-x" and launch claude in it
-                                 # cwd is mounted as the project; --agent claude implied
-
-vibe-sandboxed                   # same, but for vibe
-vibe-sandboxed -n project-x      # creates "vibe-project-x" with --agent vibe --no-dev-net
-```
-
-Set up symlinks:
+`sbx` is the daily driver: cd to a project, run `sbx`, land in Claude Code.
 
 ```bash
-ln -s ~/Repos/ai-agentic-sandbox/sandboxed.sh /usr/local/bin/claude-sandboxed
-ln -s ~/Repos/ai-agentic-sandbox/sandboxed.sh /usr/local/bin/vibe-sandboxed
+cd ~/projects/my-app
+sbx                # create-or-resume "sbx-my-app", launch claude
+                   #   (--continue when the project has session history)
+sbx new            # fresh claude session (no --continue)
+sbx shell          # bash shell instead of claude
+sbx list           # all sandboxes: name, status, project path
+sbx --agent vibe   # another agent (claude is the default)
 ```
 
-The wrappers prefix the container name (`claude-` or `vibe-`) and filter listings on the `agentic-sandbox-agent` label, so the two agents don't collide and listings are agent-specific. To pass extra options at create time, use `agent-sandbox start` directly.
+Sandboxes are named after the project directory (`~/projects/my-app` →
+`sbx-my-app`); the absolute project path is stored as a Docker label, and a
+short path hash is appended if two projects share a basename. When the last
+interactive session exits, the sandbox is **stopped automatically** — not
+removed, so container state and volumes persist and the next `sbx` resumes
+where you left off.
+
+Management stays in `agent-sandbox` (`build`, `stop`, `remove`,
+`sync-skills`, `reset-config`). To create a sandbox with non-default options
+(extra networks, ports), use `agent-sandbox start -n <name>` with the name
+`sbx` would derive — `sbx` will then find and reuse it.
 
 ## Choosing an agent
 
@@ -169,7 +176,7 @@ This is why `sync-skills` only pushes *symlinked* skills: the real (non-symlink)
 
 ### DHIS2 test instances (d2-broker)
 
-If the host runs [`d2-broker`](https://github.com/olavpo/dhis2-docker-tools) (from the dhis2-docker-tools repo), sandboxed agents can ask the host to create, reset, start/stop and delete **disposable DHIS2 test instances** — without any host shell or Docker access.
+If the host runs [`d2-broker`](https://github.com/olavpo/dhis2-docker-tools) (from the dhis2-docker-tools repo), agents in the sandbox can ask the host to create, reset, start/stop and delete **disposable DHIS2 test instances** — without any host shell or Docker access.
 
 Wiring is automatic: when `$DHIS2_BASE/_broker/tokens.json` exists on the host, `agent-sandbox start` passes the **agent-scoped** token into the container (`DHIS2_BROKER_URL` + `DHIS2_BROKER_TOKEN`), and the firewall opens egress to that single `host.docker.internal` port only. Opt out with `--no-dhis2-broker`.
 
