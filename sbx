@@ -49,9 +49,134 @@ path_hash() {
     printf '%s' "$1" | shasum -a 256 | cut -c1-4
 }
 
+container_exists()  { docker ps -a --format '{{.Names}}' | grep -qx "$1"; }
+container_running() { docker ps    --format '{{.Names}}' | grep -qx "$1"; }
+
+container_project_label() {
+    docker inspect -f "{{index .Config.Labels \"$PROJECT_LABEL\"}}" "$1" 2>/dev/null || true
+}
+
+# Container name for a project path: sbx-<sanitized basename>, with a short
+# path hash appended when that name is taken by a different project (or by a
+# pre-label container whose project path is unknown).
+derive_container_name() {
+    local project_dir="$1"
+    local base
+    base=$(sanitize_name "$(basename "$project_dir")")
+    [[ -z "$base" ]] && base="project"
+    local name="sbx-${base}"
+    if container_exists "$name" \
+            && [[ "$(container_project_label "$name")" != "$project_dir" ]]; then
+        name="${name}-$(path_hash "$project_dir")"
+    fi
+    echo "$name"
+}
+
+# --- launch ------------------------------------------------------------------
+
+# Claude Code stores per-project session history under
+# ~/.claude/projects/<project path with non-alphanumerics replaced by '-'>.
+# The project is mounted at /$PROJECT_NAME inside the container.
+has_claude_history() {
+    local container="$1"
+    docker exec "$container" sh -c '
+        d="$HOME/.claude/projects/$(printf %s "/$PROJECT_NAME" | sed "s/[^A-Za-z0-9]/-/g")"
+        [ -d "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]
+    ' 2>/dev/null
+}
+
+# The command line to exec inside the container for the chosen agent/mode.
+agent_command() {
+    local agent="$1" mode="$2" container="$3"
+    case "$agent" in
+        claude)
+            local cmd="/home/agent/.local/bin/claude --dangerously-skip-permissions"
+            if [[ "$mode" == "default" ]] && has_claude_history "$container"; then
+                cmd="$cmd --continue"
+            fi
+            echo "$cmd"
+            ;;
+        vibe)    echo "/home/agent/.local/bin/vibe" ;;
+        copilot) echo "copilot" ;;
+    esac
+}
+
+# Stop the sandbox when ours was the last interactive session. Each
+# `docker exec -it` holds one PTY in the container's /dev/pts; ours is gone
+# by the time this runs. The container is created with `docker run -dit`, so
+# the entrypoint permanently holds one PTY — the idle baseline is 1, not 0.
+maybe_stop() {
+    local container="$1" open_ptys
+    open_ptys=$(docker exec "$container" sh -c \
+        'ls /dev/pts 2>/dev/null | grep -v "^ptmx$" | wc -l' 2>/dev/null \
+        | tr -d '[:space:]') || true
+    if [[ -z "$open_ptys" ]]; then
+        return 0   # container gone or docker error — never block exit on cleanup
+    fi
+    if [[ "$open_ptys" -le 1 ]]; then
+        docker stop "$container" >/dev/null 2>&1 || true
+        echo "Sandbox '$container' stopped."
+    else
+        echo "Sandbox '$container' left running ($((open_ptys - 1)) other session(s) attached)."
+    fi
+}
+
+cmd_launch() {
+    local mode="$1" agent="$2"
+    local project_dir
+    project_dir=$(pwd -P) || { echo "Error: cannot resolve current directory" >&2; exit 1; }
+
+    local container
+    container=$(derive_container_name "$project_dir")
+
+    if container_running "$container"; then
+        echo "Attaching to running sandbox '$container'..."
+    elif container_exists "$container"; then
+        echo "Starting stopped sandbox '$container'..."
+        docker start "$container" >/dev/null
+    else
+        echo "Creating sandbox '$container' for $project_dir..."
+        agent-sandbox start "$project_dir" -n "$container" --agent "$agent"
+    fi
+
+    local proj
+    proj=$(docker exec "$container" printenv PROJECT_NAME 2>/dev/null || true)
+    local -a workdir=()
+    [[ -n "$proj" ]] && workdir=(-w "/$proj")
+
+    if [[ "$mode" == "shell" ]]; then
+        docker exec -it ${workdir[@]+"${workdir[@]}"} "$container" /bin/bash -l || true
+    else
+        local run_cmd
+        run_cmd=$(agent_command "$agent" "$mode" "$container")
+        docker exec -it ${workdir[@]+"${workdir[@]}"} "$container" /bin/bash -lc "exec $run_cmd" || true
+    fi
+
+    maybe_stop "$container"
+}
+
+cmd_list() {
+    docker ps -a --filter "label=agentic-sandbox=true" \
+        --format "table {{.Names}}\t{{.Status}}\t{{.Label \"$PROJECT_LABEL\"}}"
+}
+
 main() {
-    echo "sbx: not implemented yet" >&2
-    exit 1
+    local mode="default" agent="claude"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            new)   mode="new"; shift ;;
+            shell) mode="shell"; shift ;;
+            list)  cmd_list; exit 0 ;;
+            --agent) agent="${2:?--agent requires a value}"; shift 2 ;;
+            -h|--help|help) usage; exit 0 ;;
+            *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
+        esac
+    done
+    case "$agent" in
+        claude|copilot|vibe) ;;
+        *) echo "Error: --agent must be one of: claude, copilot, vibe" >&2; exit 1 ;;
+    esac
+    cmd_launch "$mode" "$agent"
 }
 
 # When sourced with SBX_TEST=1, expose functions without running main
