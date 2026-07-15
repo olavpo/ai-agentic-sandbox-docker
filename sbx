@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# sbx — one-command project sandbox launcher.
+#
+# cd to a project and run `sbx`: the project's sandbox is created or resumed
+# automatically (named after the directory) and you land in Claude Code,
+# continuing the previous session when one exists. When the last interactive
+# session exits, the sandbox is stopped (not removed).
+#
+# Management (build, stop, remove, sync-skills, reset-config) stays in
+# agent-sandbox.
+set -euo pipefail
+
+PROJECT_LABEL="agentic-sandbox-project"
+
+usage() {
+    cat <<'USAGE'
+Usage: sbx [new|shell|list] [--agent NAME]
+
+  sbx                Create-or-resume the sandbox for the current directory
+                     and launch claude (continues the previous session when
+                     one exists).
+  sbx new            Same, but start a fresh claude session (no --continue).
+  sbx shell          Same, but open a bash shell instead of claude.
+  sbx list           List all sandboxes with their project paths.
+
+Options:
+  --agent NAME       claude (default), copilot, or vibe.
+
+Sandboxes are named after the project directory (~/Repos/my-app →
+sbx-my-app). When the last interactive session exits, the sandbox is
+stopped, not removed. Management commands (build, stop, remove,
+sync-skills, reset-config) live in agent-sandbox.
+USAGE
+}
+
+# --- naming ----------------------------------------------------------------
+
+# Lowercase; anything outside [a-z0-9_.-] becomes '-'; squeeze repeated '-';
+# trim leading/trailing '-' and '.' (Docker names must start alphanumeric).
+# LC_ALL=C so multibyte input is treated as plain junk bytes.
+sanitize_name() {
+    printf '%s' "$1" \
+        | LC_ALL=C tr '[:upper:]' '[:lower:]' \
+        | LC_ALL=C sed -E 's/[^a-z0-9_.-]+/-/g; s/-+/-/g; s/^[-.]+//; s/[-.]+$//'
+}
+
+# First 4 hex chars of the sha256 of the given string.
+path_hash() {
+    printf '%s' "$1" | shasum -a 256 | cut -c1-4
+}
+
+main() {
+    echo "sbx: not implemented yet" >&2
+    exit 1
+}
+
+# When sourced with SBX_TEST=1, expose functions without running main
+# (used by tests/test-sbx-naming.sh).
+if [[ "${SBX_TEST:-}" != "1" ]]; then
+    main "$@"
+fi
