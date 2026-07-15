@@ -84,7 +84,11 @@ Exec details:
 
 When the interactive session launched by `sbx` exits:
 
-- Count remaining open PTYs in the container (`ls /dev/pts` minus `ptmx`).
+- Count the distinct PTYs in use by live processes in the container
+  (`ps -eo tty=`), not device nodes under `/dev/pts` — a just-exited
+  session's device node lingers for a second or two after `docker exec`
+  returns, which made a session count itself on the way out. *(Revised
+  2026-07-15; originally `ls /dev/pts` minus `ptmx`.)*
 - If zero remain (ours was the last interactive session), `docker stop` the
   container. Stopped, not removed — volumes and container state persist.
 - If other sessions remain (e.g. a second terminal ran `sbx shell`), leave

@@ -110,13 +110,18 @@ agent_command() {
 }
 
 # Stop the sandbox when ours was the last interactive session. Each
-# `docker exec -it` holds one PTY in the container's /dev/pts; ours is gone
-# by the time this runs. The container is created with `docker run -dit`, so
-# the entrypoint permanently holds one PTY — the idle baseline is 1, not 0.
+# `docker exec -it` session occupies one PTY; count the distinct PTYs in use
+# by live processes rather than device nodes under /dev/pts — the device
+# node of a just-exited session lingers for a second or two after `docker
+# exec` returns (release is asynchronous), which made a session count itself
+# on the way out. Exited processes are already reaped by the time the client
+# returns, so the process table is race-free. The container is created with
+# `docker run -dit`, so the entrypoint permanently holds one PTY (pts/0) —
+# the idle baseline is 1, not 0.
 maybe_stop() {
     local container="$1" open_ptys
     open_ptys=$(docker exec "$container" sh -c \
-        'ls /dev/pts 2>/dev/null | grep -v "^ptmx$" | wc -l' 2>/dev/null \
+        'ps -eo tty= | grep pts | sort -u | wc -l' 2>/dev/null \
         | tr -d '[:space:]') || true
     if [[ -z "$open_ptys" ]]; then
         return 0   # container gone or docker error — never block exit on cleanup
