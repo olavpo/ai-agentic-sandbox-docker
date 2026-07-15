@@ -155,7 +155,7 @@ cmd_start() {
         exit 1
     fi
 
-    project_dir="$(cd "$project_dir" && pwd)"
+    project_dir="$(cd "$project_dir" && pwd -P)"
 
     if ! [[ -d "$project_dir" ]]; then
         echo "Error: $project_dir is not a directory"

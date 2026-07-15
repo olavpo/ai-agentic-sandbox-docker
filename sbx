@@ -49,8 +49,8 @@ path_hash() {
     printf '%s' "$1" | shasum -a 256 | cut -c1-4
 }
 
-container_exists()  { docker ps -a --format '{{.Names}}' | grep -qx "$1"; }
-container_running() { docker ps    --format '{{.Names}}' | grep -qx "$1"; }
+container_exists()  { docker ps -a --format '{{.Names}}' | grep -Fqx "$1"; }
+container_running() { docker ps    --format '{{.Names}}' | grep -Fqx "$1"; }
 
 container_project_label() {
     docker inspect -f "{{index .Config.Labels \"$PROJECT_LABEL\"}}" "$1" 2>/dev/null || true

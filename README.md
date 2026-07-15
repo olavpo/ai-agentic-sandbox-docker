@@ -101,6 +101,14 @@ interactive session exits, the sandbox is **stopped automatically** — not
 removed, so container state and volumes persist and the next `sbx` resumes
 where you left off.
 
+**Known limitation**: two projects with the same directory basename (say,
+`~/work/app` and `~/side/app`) get distinct sandboxes (`sbx-app` and
+`sbx-app-3fa2`), but both mount their project at the same in-container path
+(`/app`), and the Claude config volume is shared across all `claude`
+sandboxes. Since Claude keys session history by path, `sbx` in one project
+may offer to `--continue` the *other* project's session. If that happens,
+run `sbx new` to start a fresh session instead.
+
 Management stays in `agent-sandbox` (`build`, `stop`, `remove`,
 `sync-skills`, `reset-config`). To create a sandbox with non-default options
 (extra networks, ports), use `agent-sandbox start -n <name>` with the name
@@ -286,6 +294,7 @@ SANDBOX_GITHUB_TOKEN=github_pat_...
 
 ```
 .
+├── sbx                     # One-command launcher (the daily driver)
 ├── agent-sandbox.sh        # CLI for managing sandboxes
 ├── Dockerfile              # Main sandbox image (Ubuntu 24.04)
 ├── docker-compose.yml      # Compose with named volumes
@@ -293,6 +302,7 @@ SANDBOX_GITHUB_TOKEN=github_pat_...
 ├── .devcontainer/          # VS Code Dev Container config
 ├── .env.example            # API key template
 ├── extensions/             # Optional language Dockerfiles
+├── tests/                  # Unit tests for sbx naming helpers
 └── sandbox-runtime/        # PARKED: lighter sandbox-runtime alternative
     ├── KNOWN-ISSUES.md     #   reason it's not active (upstream TUI bug)
     └── ...
