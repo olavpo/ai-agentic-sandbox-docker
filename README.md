@@ -101,13 +101,10 @@ interactive session exits, the sandbox is **stopped automatically** — not
 removed, so container state and volumes persist and the next `sbx` resumes
 where you left off.
 
-**Known limitation**: two projects with the same directory basename (say,
-`~/work/app` and `~/side/app`) get distinct sandboxes (`sbx-app` and
-`sbx-app-3fa2`), but both mount their project at the same in-container path
-(`/app`), and the Claude config volume is shared across all `claude`
-sandboxes. Since Claude keys session history by path, `sbx` in one project
-may offer to `--continue` the *other* project's session. If that happens,
-run `sbx new` to start a fresh session instead.
+Inside the container the project is mounted at its full host path (e.g.
+`/Users/you/projects/my-app`), so Claude's per-project session history —
+which is keyed by path in the shared config volume — never collides between
+projects, even when two projects share a basename.
 
 Management stays in `agent-sandbox` (`build`, `stop`, `remove`,
 `sync-skills`, `reset-config`). To create a sandbox with non-default options
@@ -341,7 +338,7 @@ Anthropic publishes a reference dev container at [anthropics/claude-code/.devcon
 | Network | bridge + iptables egress firewall | bridge + iptables egress firewall |
 | Egress allowlist | Anthropic + GitHub + npm + pypi + dhis2 + dev CDNs | Anthropic + GitHub + npm + sentry + vscode marketplace |
 | Volume isolation | Shared across all sandboxes (log in once) | Per-`${devcontainerId}` (re-login per project) |
-| Project mount | `/<project-name>` | `/workspace` |
+| Project mount | Full host path (unique per project) | `/workspace` |
 | Skills sync | Bidirectional `sync-skills` command | n/a (Claude-only image) |
 | Host-visible port | Random `SANDBOX_HOST_PORT` from 49200-49300, auto-published | Manual port forwarding via VS Code |
 | Joinable to user networks | `--network dev-net` flag | n/a |

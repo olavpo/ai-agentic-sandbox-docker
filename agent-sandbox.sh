@@ -180,7 +180,10 @@ cmd_start() {
 
     local project_name
     project_name="$(basename "$project_dir")"
-    local volumes=(-v "$project_dir:/$project_name")
+    # Mount the project at its full host path. The in-container path is what
+    # keys Claude Code's per-project session history (in the shared config
+    # volume), so it must be unique per project — basenames alone collide.
+    local volumes=(-v "$project_dir:$project_dir")
 
     if $mount_config; then
         # gh config is generic (git auth); always mount it.
@@ -203,6 +206,7 @@ cmd_start() {
     # Pass through API keys if set on host
     local env_args=(
         -e "PROJECT_NAME=$project_name"
+        -e "PROJECT_DIR=$project_dir"
         -e "SSH_AUTH_SOCK="
         -e "AGENT_CHOICE=$agent_choice"
     )
@@ -309,7 +313,7 @@ cmd_start() {
     port_args+=("${extra_ports[@]+"${extra_ports[@]}"}")
 
     echo "Starting sandbox '$container_name'..."
-    echo "  Project: $project_dir → /$project_name"
+    echo "  Project: $project_dir (mounted at the same path in the container)"
     echo "  Agent: $agent_choice"
     $mount_config && echo "  Agent configs: named volumes (isolated)"
     if $host_network; then
@@ -407,10 +411,17 @@ cmd_shell() {
         docker ps --filter "ancestor=$IMAGE_NAME" --format "  {{.Names}}  ({{.Status}})"
         exit 1
     fi
-    local project_name
-    project_name=$(docker exec "$container_name" printenv PROJECT_NAME 2>/dev/null || true)
-    if [[ -n "$project_name" ]]; then
-        docker exec -it -w "/$project_name" "$container_name" /bin/bash -l
+    # Prefer the full-path mount (PROJECT_DIR); fall back to the legacy
+    # /<basename> mount for containers created before PROJECT_DIR existed.
+    local workdir
+    workdir=$(docker exec "$container_name" printenv PROJECT_DIR 2>/dev/null || true)
+    if [[ -z "$workdir" ]]; then
+        local project_name
+        project_name=$(docker exec "$container_name" printenv PROJECT_NAME 2>/dev/null || true)
+        [[ -n "$project_name" ]] && workdir="/$project_name"
+    fi
+    if [[ -n "$workdir" ]]; then
+        docker exec -it -w "$workdir" "$container_name" /bin/bash -l
     else
         docker exec -it "$container_name" /bin/bash -l
     fi

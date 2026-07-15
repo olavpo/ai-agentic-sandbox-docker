@@ -76,11 +76,13 @@ derive_container_name() {
 
 # Claude Code stores per-project session history under
 # ~/.claude/projects/<project path with non-alphanumerics replaced by '-'>.
-# The project is mounted at /$PROJECT_NAME inside the container.
+# The project is mounted at $PROJECT_DIR (its full host path) inside the
+# container; /$PROJECT_NAME is the legacy basename mount from containers
+# created before PROJECT_DIR existed.
 has_claude_history() {
     local container="$1"
     docker exec "$container" sh -c '
-        d="$HOME/.claude/projects/$(printf %s "/$PROJECT_NAME" | sed "s/[^A-Za-z0-9]/-/g")"
+        d="$HOME/.claude/projects/$(printf %s "${PROJECT_DIR:-/$PROJECT_NAME}" | sed "s/[^A-Za-z0-9]/-/g")"
         [ -d "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]
     ' 2>/dev/null
 }
@@ -139,10 +141,16 @@ cmd_launch() {
         agent-sandbox start "$project_dir" -n "$container" --agent "$agent"
     fi
 
-    local proj
-    proj=$(docker exec "$container" printenv PROJECT_NAME 2>/dev/null || true)
+    # Workdir: the full-path mount (PROJECT_DIR), or the legacy /<basename>
+    # mount for containers created before PROJECT_DIR existed.
+    local proj_dir proj
+    proj_dir=$(docker exec "$container" printenv PROJECT_DIR 2>/dev/null || true)
+    if [[ -z "$proj_dir" ]]; then
+        proj=$(docker exec "$container" printenv PROJECT_NAME 2>/dev/null || true)
+        [[ -n "$proj" ]] && proj_dir="/$proj"
+    fi
     local -a workdir=()
-    [[ -n "$proj" ]] && workdir=(-w "/$proj")
+    [[ -n "$proj_dir" ]] && workdir=(-w "$proj_dir")
 
     if [[ "$mode" == "shell" ]]; then
         docker exec -it ${workdir[@]+"${workdir[@]}"} "$container" /bin/bash -l || true

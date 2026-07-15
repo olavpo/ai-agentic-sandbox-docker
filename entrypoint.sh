@@ -239,7 +239,11 @@ fi
 git config --global core.excludesfile "$AGENT_HOME/.gitignore_global"
 
 # --- cd into the project ---
-if [[ -n "${PROJECT_NAME:-}" && -d "/$PROJECT_NAME" ]]; then
+# PROJECT_DIR is the full-host-path mount; /$PROJECT_NAME is the legacy
+# basename mount for containers created before PROJECT_DIR existed.
+if [[ -n "${PROJECT_DIR:-}" && -d "$PROJECT_DIR" ]]; then
+    cd "$PROJECT_DIR"
+elif [[ -n "${PROJECT_NAME:-}" && -d "/$PROJECT_NAME" ]]; then
     cd "/$PROJECT_NAME"
 fi
 

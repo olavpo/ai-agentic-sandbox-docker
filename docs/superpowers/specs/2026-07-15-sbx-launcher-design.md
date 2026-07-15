@@ -57,8 +57,14 @@ Same state machine as the previous `sandboxed.sh`:
 
 Exec details:
 
-- Working directory inside the container is `/$PROJECT_NAME` (read from the
-  container's `PROJECT_NAME` env, as today).
+- The project is mounted at its **full host path** inside the container
+  (`~/work/app` → `/Users/you/work/app`), passed in as `PROJECT_DIR`. The
+  in-container path keys Claude Code's per-project session history in the
+  shared config volume, so it must be unique per project — basename-only
+  mounts made same-basename projects share (and cross-contaminate) session
+  history. *(Revised 2026-07-15; originally `/$PROJECT_NAME`.)*
+- Working directory inside the container is `$PROJECT_DIR`, falling back to
+  the legacy `/$PROJECT_NAME` for containers created before the revision.
 - Claude runs as `/home/agent/.local/bin/claude --dangerously-skip-permissions`.
 - Default mode decides `--continue` by checking inside the container whether
   the project has prior Claude session history (a non-empty
