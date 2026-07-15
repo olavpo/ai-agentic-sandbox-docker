@@ -325,6 +325,7 @@ cmd_start() {
         --name "$container_name" \
         --label "agentic-sandbox=true" \
         --label "agentic-sandbox-agent=$agent_choice" \
+        --label "agentic-sandbox-project=$project_dir" \
         "${net_args[@]+"${net_args[@]}"}" \
         "${cap_args[@]+"${cap_args[@]}"}" \
         "${port_args[@]+"${port_args[@]}"}" \
