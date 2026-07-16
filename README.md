@@ -227,9 +227,9 @@ Each agent's auth lives in its named Docker volume. Log in once from any sandbox
 
 The container uses HTTPS for git operations (SSH is not installed).
 
-Set either `GITHUB_TOKEN` or `SANDBOX_GITHUB_TOKEN` in your `.env`. If both are set, `SANDBOX_GITHUB_TOKEN` wins inside the container. This lets you keep a read-write `GITHUB_TOKEN` for your host and a read-only `SANDBOX_GITHUB_TOKEN` for the agent.
+Sandboxes only ever receive the dedicated `SANDBOX_GITHUB_TOKEN` from your `.env`. Your personal `GITHUB_TOKEN` is **never** passed in — if it's set but `SANDBOX_GITHUB_TOKEN` isn't, the launcher prints a note and the sandbox gets no GitHub access. This guarantees agents can't inherit broader scopes than the dedicated token grants.
 
-### Read-only token (recommended)
+### Creating the read-only token
 
 To prevent the agent from pushing or merging, use a **fine-grained** GitHub PAT:
 
