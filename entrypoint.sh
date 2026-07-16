@@ -143,6 +143,21 @@ HTTPS only (SSH is not installed). `GITHUB_TOKEN` is set if the user provided on
 - Your project is mounted at `/<project-name>` (whatever directory you start in).
 - Skills live under `~/.claude/skills/`. If a skill is missing, ask the user to run `agent-sandbox sync-skills push` outside the container. **Edits you make to a skill *inside* the sandbox don't persist** — `~/.claude/skills/` is synced from the host. Apply skill changes host-side (the masters), or they're lost on the next sync.
 - You can write freely under `/<project-name>`, `/tmp`, and `~/`. The host filesystem outside the project mount is not accessible.
+- **Host-mounted `node_modules` may carry the wrong platform's native binaries** (the host is often macOS/arm64; this sandbox is Linux). Symptom: `MODULE_NOT_FOUND: @rollup/rollup-linux-*`, or esbuild/swc/sharp failing to load. Do NOT plain-`pnpm install` (it would strip the host's darwin binaries and break the host instead). For pnpm projects, declare both platforms in `pnpm-workspace.yaml` and reinstall:
+
+  ```yaml
+  supportedArchitectures:
+      os: [darwin, linux]
+      cpu: [arm64, x64]
+  ```
+
+  then `pnpm install --force` — both platforms' binaries coexist and neither side breaks.
+
+### Long-running dev servers
+
+- Start dev servers with the shell tool's background mode (`run_in_background`), not `nohup …&`/`setsid`/`disown` (these exit 144 here). Record the PID at launch if you'll need to stop it.
+- **Don't stop a server with `pkill -f <its command line>`** — the pattern matches your own invoking shell, which kills the compound command with exit 144 and leaves phantom `pgrep` hits. Kill the recorded PID, or `pgrep -f` a *differently-worded* pattern first and kill the numeric result.
+- The DHIS2 dev servers' file watcher races editors' atomic writes: editing source while `d2-app-scripts start`/`webpack-dev-server` runs can crash it with `ENOENT … <file>.tmp.<pid>…`. Harmless — batch your edits, then (re)start the server, rather than restarting after every edit.
 
 ### Permissions
 
@@ -220,6 +235,16 @@ fi
 # --- Git HTTPS auth ---
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then
     git config --global credential.helper '!f() { echo "username=x-token"; echo "password=$GITHUB_TOKEN"; }; f'
+    # Sanity-check the token so a dead one is announced at boot instead of
+    # surfacing mid-session as a baffling 401 from gh/git. Non-fatal: the
+    # sandbox works without GitHub access.
+    if command -v gh &>/dev/null; then
+        if ! GH_TOKEN="$GITHUB_TOKEN" gh auth status &>/dev/null; then
+            echo "[entrypoint] WARNING: GITHUB_TOKEN is set but GitHub rejects it" \
+                 "(gh auth status failed) — expired or mis-injected. gh and git" \
+                 "HTTPS operations will 401 until the host provides a fresh token."
+        fi
+    fi
 fi
 
 # --- Git identity ---
