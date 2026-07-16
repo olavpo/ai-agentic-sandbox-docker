@@ -3,6 +3,15 @@ FROM ubuntu:24.04
 ARG DEBIAN_FRONTEND=noninteractive
 ARG TZ=Etc/UTC
 
+# ports.ubuntu.com (the arm64 mirror) has outage spells; pass e.g.
+#   --build-arg UBUNTU_MIRROR=https://mirror.kumi.systems/ubuntu-ports
+# to build via an alternative mirror. Empty = keep the default.
+ARG UBUNTU_MIRROR=""
+RUN if [ -n "$UBUNTU_MIRROR" ]; then \
+        sed -i "s|http://ports.ubuntu.com/ubuntu-ports|$UBUNTU_MIRROR|g" \
+            /etc/apt/sources.list.d/ubuntu.sources; \
+    fi
+
 # Create non-root user (handle UID 1000 conflicts on Ubuntu base images)
 ARG USERNAME=agent
 ARG USER_UID=1000
