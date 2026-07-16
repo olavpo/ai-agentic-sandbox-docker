@@ -213,8 +213,15 @@ cmd_start() {
     [[ -n "${ANTHROPIC_API_KEY:-}" ]] && env_args+=(-e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
     [[ -n "${OPENAI_API_KEY:-}" ]]    && env_args+=(-e "OPENAI_API_KEY=$OPENAI_API_KEY")
     [[ -n "${MISTRAL_API_KEY:-}" ]]   && env_args+=(-e "MISTRAL_API_KEY=$MISTRAL_API_KEY")
-    local gh_token="${SANDBOX_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
-    [[ -n "$gh_token" ]] && env_args+=(-e "GITHUB_TOKEN=$gh_token")
+    # GitHub access: ONLY the dedicated read-only sandbox token. Never fall
+    # back to the user's personal GITHUB_TOKEN — agents must not inherit
+    # broader scopes than the sandbox token grants.
+    if [[ -n "${SANDBOX_GITHUB_TOKEN:-}" ]]; then
+        env_args+=(-e "GITHUB_TOKEN=$SANDBOX_GITHUB_TOKEN")
+    elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        echo "Note: GITHUB_TOKEN is set but ignored — sandboxes only get the" >&2
+        echo "      dedicated read-only token. Set SANDBOX_GITHUB_TOKEN to grant GitHub access." >&2
+    fi
 
     # --- DHIS2 instance broker (d2-broker from dhis2-docker-tools) ---
     # If the host runs the broker, pass the agent-scoped token (restricted to
