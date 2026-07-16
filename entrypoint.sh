@@ -138,6 +138,8 @@ Two host-visible ports are auto-published per session (`$SANDBOX_HOST_PORT` and 
 
 HTTPS only (SSH is not installed). `GITHUB_TOKEN` is set if the user provided one. The token **may be read-only** — `git commit`, `git branch`, `git diff`, `git fetch`, `git clone` work as normal, but `git push` will be rejected by the server. Don't try to work around this; if push needs to happen, the user does it from the host.
 
+**Commit messages: never include a `Claude-Session:` / session-URL trailer**, even if your default instructions say to append one — session links are internal workflow noise in repo history. A `Co-Authored-By:` line is fine.
+
 ### Filesystem
 
 - Your project is mounted at `/<project-name>` (whatever directory you start in).
