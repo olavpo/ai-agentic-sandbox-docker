@@ -65,7 +65,8 @@ Commands:
   stop [container]          Stop a running sandbox (preserves container)
   remove <container>        Remove a sandbox container (preserves volumes)
   list                      List all sandboxes
-  build                     Build (or rebuild) the sandbox image
+  build                     Build (or rebuild) the sandbox image, dropping the
+                            image it replaces when nothing still uses it
   extend <dockerfile>       Build an extended image from a language Dockerfile
   sync-skills [push|pull]   Sync ~/.claude/skills between container and host
   reset-config              Wipe all agent config volumes (with confirmation)
@@ -292,6 +293,25 @@ OPENAI_API_KEY=sk-...
 MISTRAL_API_KEY=...
 SANDBOX_GITHUB_TOKEN=github_pat_...
 ```
+
+### Image housekeeping
+
+Rebuilding moves the `agentic-sandbox:latest` tag to the new image and leaves the previous one untagged — a `<none>:<none>` entry of ~2.7 GB in Docker Desktop. `build` now removes the image it replaced automatically.
+
+It can only do that when nothing references the old image, and **stopped sandboxes still count**. `sbx` stops containers rather than removing them so sessions stay resumable, so old sandboxes accumulate and pin the image they were created from. When a rebuild reports:
+
+```
+Previous image kept — still used by: sbx-foo sbx-bar ...
+```
+
+that is the reason. Reclaim the space by removing sandboxes you're done with, after which the next build drops the image:
+
+```bash
+agent-sandbox list                  # see what exists
+agent-sandbox remove sbx-old-thing  # container only; config volumes are kept
+```
+
+The prune is deliberately scoped to this image — it never runs `docker image prune`, which would also delete unrelated dangling images from your other projects.
 
 ## Project Structure
 

@@ -94,16 +94,54 @@ pick_port() {
     return 1
 }
 
+# Rebuilding with the same tag moves ':latest' to the new image and leaves the
+# previous one untagged (<none>:<none>) but still on disk — ~2.7 GB a piece,
+# which is what makes them pile up in Docker Desktop. Drop the one we just
+# replaced, but only if nothing references it. Deliberately targeted at this
+# image rather than `docker image prune`, which would also delete unrelated
+# dangling images from other projects.
+prune_previous_image() {
+    local old_id="$1" new_id users short
+    [[ -z "$old_id" ]] && return 0
+    short="${old_id#sha256:}"; short="${short:0:12}"
+
+    new_id=$(docker image inspect -f '{{.Id}}' "$IMAGE_NAME" 2>/dev/null || true)
+    # Cache hit: the rebuild produced the same image, so there is nothing to drop.
+    [[ "$old_id" == "$new_id" ]] && return 0
+
+    # Containers still on the old image pin it — including stopped sandboxes,
+    # which is why old images can legitimately survive a rebuild. `docker rmi`
+    # would refuse anyway; checking first keeps the output honest.
+    users=$(docker ps -a --filter "ancestor=$old_id" --format '{{.Names}}' | paste -sd' ' -)
+    if [[ -n "${users// /}" ]]; then
+        echo "  Previous image kept — still used by: $users"
+        echo "  It is removed once those sandboxes are gone (agent-sandbox remove <name>)."
+        return 0
+    fi
+
+    if docker rmi "$old_id" >/dev/null 2>&1; then
+        echo "  Removed previous image ($short)."
+    else
+        echo "  Note: could not remove previous image ($short); left in place."
+    fi
+}
+
+build_image() {
+    local old_id
+    old_id=$(docker image inspect -f '{{.Id}}' "$IMAGE_NAME" 2>/dev/null || true)
+    echo "Building sandbox image..."
+    docker build -t "$IMAGE_NAME" "$SCRIPT_DIR"
+    prune_previous_image "$old_id"
+}
+
 ensure_image() {
     if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
-        echo "Building sandbox image..."
-        docker build -t "$IMAGE_NAME" "$SCRIPT_DIR"
+        build_image
     fi
 }
 
 cmd_build() {
-    echo "Building sandbox image..."
-    docker build -t "$IMAGE_NAME" "$SCRIPT_DIR"
+    build_image
 }
 
 # Block until the entrypoint signals that egress is filtered. `docker run` and
