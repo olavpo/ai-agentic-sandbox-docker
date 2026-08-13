@@ -130,11 +130,44 @@ populate_allowed_ips() {
     done
 }
 
+# --- Tamper check --------------------------------------------------------
+# The load-bearing pieces of the egress policy. Anything that opens the
+# sandbox up — `iptables -F OUTPUT`, `-P OUTPUT ACCEPT`, destroying the ipset
+# — takes at least one of these away, so this is enough to notice. It is a
+# structural check, not a full audit: it cannot detect an *extra* ACCEPT rule
+# someone appended, and with root inside the container that is not fixable
+# here (see docs/UPSTREAM-DOCKER-IMPROVEMENTS.md §1).
+firewall_intact() {
+    iptables -C OUTPUT -j REJECT --reject-with icmp-admin-prohibited 2>/dev/null || return 1
+    iptables -C OUTPUT -m set --match-set allowed-domains dst -j ACCEPT 2>/dev/null || return 1
+    [[ "$(iptables -S 2>/dev/null | awk '/^-P OUTPUT/ {print $3}')" == "DROP" ]] || return 1
+    ipset list allowed-domains >/dev/null 2>&1 || return 1
+    return 0
+}
+
 # --- Refresh-only path ---------------------------------------------------
+# Normally just re-resolves DOMAINS into the existing ipset. But if the rules
+# have been removed or altered since the last pass, re-apply everything by
+# falling through to the full init below. That makes the firewall self-healing
+# against an in-container flush: the sandbox is re-fenced within one refresh
+# interval and the event is on the record, rather than the sandbox quietly
+# staying open until it is next recreated.
 if [[ $REFRESH_ONLY -eq 1 ]]; then
-    populate_allowed_ips
-    exit 0
+    if firewall_intact; then
+        populate_allowed_ips
+        exit 0
+    fi
+    echo "WARNING: egress rules missing or altered since last check — re-applying full init."
+    echo "WARNING: something inside the container flushed or weakened the firewall."
+    # Keep the allowlist we already resolved. A repair runs with egress in a
+    # broken state, so re-resolving from scratch here would fail for everything
+    # (GitHub's IP ranges come from an HTTPS call that is itself blocked) and we
+    # would "heal" into a firewall that denies the hosts the sandbox needs. The
+    # existing ipset entries are still valid; the next scheduled refresh tops
+    # them up once egress works again.
+    PRESERVE_IPSET=1
 fi
+PRESERVE_IPSET="${PRESERVE_IPSET:-0}"
 
 # === Full init below =====================================================
 
@@ -148,7 +181,9 @@ iptables -t nat -F
 iptables -t nat -X
 iptables -t mangle -F
 iptables -t mangle -X
-ipset destroy allowed-domains 2>/dev/null || true
+if [[ "$PRESERVE_IPSET" != "1" ]]; then
+    ipset destroy allowed-domains 2>/dev/null || true
+fi
 
 # Restore Docker DNS rules
 if [ -n "$DOCKER_DNS_RULES" ]; then
@@ -189,10 +224,18 @@ if [[ "$dns_pinned" == false ]]; then
 fi
 
 # Create the ipset that will hold all allowed CIDRs
-ipset create allowed-domains hash:net
+ipset create allowed-domains hash:net 2>/dev/null || true
 
-# Populate the ipset (GitHub IP ranges + resolved DOMAINS)
-populate_allowed_ips
+# Populate the ipset (GitHub IP ranges + resolved DOMAINS). Skipped on a repair
+# that still has a populated set: resolution needs working egress, which is
+# exactly what is broken at that moment, so the entries we already hold are
+# better than the empty result a failed re-resolve would leave behind.
+if [[ "$PRESERVE_IPSET" == "1" ]] \
+    && [[ "$(ipset list allowed-domains 2>/dev/null | grep -c '^[0-9]')" -gt 0 ]]; then
+    echo "Reusing the existing allowlist; the next refresh will top it up."
+else
+    populate_allowed_ips
+fi
 
 # --- Allow ALL attached Docker bridge network subnets ---
 # The container may be attached to multiple Docker networks (default bridge,

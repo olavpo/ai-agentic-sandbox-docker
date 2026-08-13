@@ -52,6 +52,10 @@ root) or accepting arguments (which would let the agent open its own egress
 hole). The mode is re-applied per boot, so it is reversible and restart-safe.
 Requires `--cap-add=SYS_PTRACE`, which grants the agent nothing.
 
+Also added, not in the findings: the refresh loop now verifies the *rules* and
+re-applies the full policy when they have been tampered with, making the default
+mode tamper-evident rather than silently open.
+
 ---
 
 ## 1. Passwordless sudo makes the egress firewall unenforceable

@@ -37,6 +37,13 @@ if sudo -n /usr/local/bin/sandbox-privileged-boot.sh; then
         # a while connections to those hosts start failing with "No route
         # to host". The background loop re-resolves DOMAINS into the
         # existing ipset (no rule flush, no in-flight disruption).
+        #
+        # It also re-checks the rules themselves and re-applies the full policy
+        # if they have been flushed or weakened, so a sandbox that lost its
+        # firewall is re-fenced within one interval instead of staying open
+        # until it is next recreated. That is a backstop, not a boundary: with
+        # general sudo an agent can flush it again straight away. Use
+        # --strict-sudo if you need it to be a boundary.
         REFRESH_INTERVAL="${SANDBOX_FIREWALL_REFRESH_INTERVAL:-300}"
         (
             while true; do
