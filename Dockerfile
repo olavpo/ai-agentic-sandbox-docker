@@ -114,6 +114,9 @@ ENV DEVCONTAINER=true
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 ENV CLAUDE_CONFIG_DIR="/home/$USERNAME/.claude"
+# Claude Code's own copy-on-select needs a clipboard the container doesn't have,
+# so give mouse drag back to the host terminal. Wheel scrolling still works.
+ENV CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1
 
 # Create workspace and config directories
 RUN mkdir -p /workspaces /home/$USERNAME/.claude/skills /home/$USERNAME/.config/gh /home/$USERNAME/.copilot /home/$USERNAME/.vibe
