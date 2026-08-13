@@ -13,6 +13,47 @@ Ordered by severity.
 
 ---
 
+## Status in this repo (2026-08-13)
+
+All four were reproduced here and are now addressed. Two corrections to the
+findings as written, both found while fixing them:
+
+| # | Finding | Status |
+|---|---|---|
+| 1 | Passwordless sudo | Addressed as an **opt-in mode** (`--strict-sudo`), not a removal — see below |
+| 2 | DNS unrestricted | Fixed. DNS pinned to the resolvers in `/etc/resolv.conf` |
+| 3 | Startup race | Fixed. `/tmp/sandbox-firewall-ready` handshake; launchers block on it |
+| 4 | Fails open | Fixed. Firewall failure is fatal unless `SANDBOX_SKIP_FIREWALL=1` |
+| 5 | Mirrors allowlisted | Was already satisfied; entries kept |
+
+**Correction to §1's repro.** `sudo iptables -F OUTPUT` alone does *not* open
+this repo's sandbox: the full init sets `-P OUTPUT DROP`, so flushing the rules
+leaves the policy denying everything and locks the sandbox down instead. The
+working escape needs the policy flip *and* the flush
+(`iptables -P OUTPUT ACCEPT && iptables -F OUTPUT`), verified here. The
+conclusion is unchanged — the agent can defeat the firewall — but a port that
+tests only the flush will wrongly conclude it is safe.
+
+**Correction to §2's fix.** Pinning `-d 127.0.0.11 --dport 53` is redundant and
+would not match anyway: on a user-defined network the resolver is reached over
+loopback (already allowed by the `-o lo` rule that sits immediately after the
+offending one), and the restored Docker NAT rules rewrite the port before the
+filter table sees it. The rule that actually matters is for the *default
+bridge*, where the resolver is an external address.
+
+**§1 was not implemented as written.** Dropping the blanket sudoers rule breaks
+the entrypoint, which needs root on *every* boot — the naive
+"delete `/etc/sudoers.d/agent` at boot" ratchet leaves a container that cannot
+initialise its firewall on restart and, now that the firewall fails closed,
+never boots again. Instead the privileged boot work moved into
+`sandbox-privileged-boot.sh`, which reads its config from `/proc/1/environ` so
+it can be authorised in sudoers without also authorising `env` (equivalent to
+root) or accepting arguments (which would let the agent open its own egress
+hole). The mode is re-applied per boot, so it is reversible and restart-safe.
+Requires `--cap-add=SYS_PTRACE`, which grants the agent nothing.
+
+---
+
 ## 1. Passwordless sudo makes the egress firewall unenforceable
 
 **Where:** `Dockerfile:35`

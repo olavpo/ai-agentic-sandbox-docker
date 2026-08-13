@@ -8,28 +8,29 @@ AGENT_HOME="/home/agent"
 unset SSH_AUTH_SOCK
 export SSH_AUTH_SOCK=""
 
-# --- Egress firewall ---
-# Run unless the user explicitly opted into host networking via
-# SANDBOX_SKIP_FIREWALL=1 (set by `agent-sandbox start --host-network`).
-# Requires NET_ADMIN + NET_RAW caps on the container; without them init fails
-# and the container refuses to boot rather than coming up unprotected.
+# --- Privileged boot: sudo policy, host-visible ports, egress firewall ---
+# All of it happens in sandbox-privileged-boot.sh, the one thing the agent may
+# run as root. It reads its config (SANDBOX_STRICT_SUDO, SANDBOX_SKIP_FIREWALL,
+# DHIS2_BROKER_URL, ADB_SERVER_SOCKET, SANDBOX_HOST_PORT*) from /proc/1/environ
+# rather than from this shell, so those values cannot be forged from inside the
+# container — see the comment block in that script for why that matters.
 #
-# FIREWALL_READY is the launcher's attach handshake. `docker exec` bypasses
-# this entrypoint's ordering entirely, so without it a session can attach
-# while egress is still unrestricted — a window that recurs on every
-# `docker start`, not just on first creation. Clearing it here matters: a
-# restarted container would otherwise reuse a stale marker and the wait
-# would be a no-op.
+# The firewall needs NET_ADMIN + NET_RAW; without them init fails and the
+# container refuses to boot rather than coming up unprotected.
+#
+# FIREWALL_READY is the launcher's attach handshake. `docker exec` bypasses this
+# entrypoint's ordering entirely, so without it a session can attach while
+# egress is still unrestricted — a window that recurs on every `docker start`,
+# not just on first creation. It is written only after privileged boot has
+# finished, which in a --strict-sudo sandbox is also the point where the agent's
+# general root has already been taken away. Clearing it here matters: a
+# restarted container would otherwise reuse a stale marker and the wait would be
+# a no-op.
 FIREWALL_READY=/tmp/sandbox-firewall-ready
 rm -f "$FIREWALL_READY"
 
-if [[ "${SANDBOX_SKIP_FIREWALL:-}" != "1" ]]; then
-    # DHIS2_BROKER_URL and ADB_SERVER_SOCKET are forwarded explicitly because
-    # sudo resets the environment; the firewall opens egress to just those
-    # host:ports.
-    if sudo -n env DHIS2_BROKER_URL="${DHIS2_BROKER_URL:-}" \
-            ADB_SERVER_SOCKET="${ADB_SERVER_SOCKET:-}" \
-            /usr/local/bin/init-firewall.sh; then
+if sudo -n /usr/local/bin/sandbox-privileged-boot.sh; then
+    if [[ "${SANDBOX_SKIP_FIREWALL:-}" != "1" ]]; then
         # Keep up with CDN edge IP rotation. Hosts behind CloudFront (e.g.
         # docs.dhis2.org) return different edge IPs over time; the IPs we
         # resolved at boot age out of the allowed-domains ipset, and after
@@ -40,45 +41,26 @@ if [[ "${SANDBOX_SKIP_FIREWALL:-}" != "1" ]]; then
         (
             while true; do
                 sleep "$REFRESH_INTERVAL"
-                sudo -n /usr/local/bin/init-firewall.sh --refresh-only \
+                sudo -n /usr/local/bin/sandbox-privileged-boot.sh refresh \
                     >/tmp/firewall-refresh.log 2>&1 || true
             done
         ) &
         disown
-        : > "$FIREWALL_READY"
-        chmod 0644 "$FIREWALL_READY"
     else
-        # Fail closed. A transient DNS failure or GitHub API hiccup used to
-        # produce a silently unprotected sandbox behind one warning line. An
-        # explicit opt-out exists, which is what makes refusing to boot
-        # affordable: whoever wants no firewall has a supported way to say so.
-        echo "[entrypoint] FATAL: firewall init failed; refusing to start unprotected." >&2
-        echo "[entrypoint]   To run without a firewall on purpose:" >&2
-        echo "[entrypoint]     agent-sandbox start <dir> --host-network" >&2
-        echo "[entrypoint]   (or set SANDBOX_SKIP_FIREWALL=1 for a hand-rolled docker run)" >&2
-        exit 1
+        echo "[entrypoint] SANDBOX_SKIP_FIREWALL=1 — running with unrestricted network."
     fi
-else
-    echo "[entrypoint] SANDBOX_SKIP_FIREWALL=1 — running with unrestricted network."
-    # Still signal readiness, or the launcher's wait times out on a sandbox
-    # that was deliberately started without a firewall.
     : > "$FIREWALL_READY"
     chmod 0644 "$FIREWALL_READY"
-fi
-
-# --- Surface host-visible ports to the agent (container-local channels) ---
-# agent-sandbox.sh pre-allocates unused host ports and publishes them both ways
-# (-p PORT:PORT), then passes them via the env. Each sandbox gets its own
-# ports, so the actual VALUES are kept container-local:
-#   - $SANDBOX_HOST_PORT (+ $SANDBOX_HOST_PORT_2) env vars (set by docker run)
-#   - /etc/sandbox-info (plain-text dump for tools that don't read env)
-# SANDBOX_HOST_PORT_2 is optional so this stays correct against an older
-# agent-sandbox.sh that only publishes one port.
-if [[ -n "${SANDBOX_HOST_PORT:-}" ]]; then
-    {
-        echo "SANDBOX_HOST_PORT=$SANDBOX_HOST_PORT"
-        [[ -n "${SANDBOX_HOST_PORT_2:-}" ]] && echo "SANDBOX_HOST_PORT_2=$SANDBOX_HOST_PORT_2"
-    } | sudo tee /etc/sandbox-info >/dev/null
+else
+    # Fail closed. A transient DNS failure or GitHub API hiccup used to produce
+    # a silently unprotected sandbox behind one warning line. An explicit
+    # opt-out exists, which is what makes refusing to boot affordable: whoever
+    # wants no firewall has a supported way to say so.
+    echo "[entrypoint] FATAL: privileged boot failed; refusing to start unprotected." >&2
+    echo "[entrypoint]   To run without a firewall on purpose:" >&2
+    echo "[entrypoint]     agent-sandbox start <dir> --host-network" >&2
+    echo "[entrypoint]   (or set SANDBOX_SKIP_FIREWALL=1 for a hand-rolled docker run)" >&2
+    exit 1
 fi
 
 # --- Generic sandbox brief in ~/.claude/CLAUDE.md ---
@@ -186,9 +168,30 @@ HTTPS only (SSH is not installed). `GITHUB_TOKEN`, when set, is the dedicated sa
 - **Don't stop a server with `pkill -f <its command line>`** — the pattern matches your own invoking shell, which kills the compound command with exit 144 and leaves phantom `pgrep` hits. Kill the recorded PID, or `pgrep -f` a *differently-worded* pattern first and kill the numeric result.
 - The DHIS2 dev servers' file watcher races editors' atomic writes: editing source while `d2-app-scripts start`/`webpack-dev-server` runs can crash it with `ENOENT … <file>.tmp.<pid>…`. Harmless — batch your edits, then (re)start the server, rather than restarting after every edit.
 
+EOF
+
+# The Permissions section depends on this sandbox's sudo mode. Getting this
+# wrong is not cosmetic: an agent told it has root that it doesn't will burn
+# turns on `sudo apt-get` and misread the failures as something else.
+if [[ "${SANDBOX_STRICT_SUDO:-}" == "1" ]]; then
+    cat >> "$claude_md" <<'EOF'
+### Permissions
+
+You run as the `agent` user. This sandbox was started with **strict sudo**: you have no general root here, so `sudo apt-get install …`, `sudo iptables …` and similar will fail, and there is no way around that from inside. This is deliberate — it is what stops the egress firewall from being removable.
+
+Whatever you need should already be in the image. If something is genuinely missing, say so and ask the user to install it from the host (`docker exec -u root <container> …`) or add it to the image; don't spend turns looking for a privilege-escalation route. Resource limits: 8 GB RAM, 4 CPUs.
+EOF
+else
+    cat >> "$claude_md" <<'EOF'
 ### Permissions
 
 You run as the `agent` user with passwordless `sudo` for system changes inside the container. Sudo doesn't reach the user's host. Resource limits: 8 GB RAM, 4 CPUs.
+
+Note that `sudo` also reaches the egress firewall. Don't reconfigure or flush it to work around a blocked host — ask the user to allowlist what you need instead.
+EOF
+fi
+
+cat >> "$claude_md" <<'EOF'
 <!-- END agent-sandbox -->
 EOF
 
@@ -203,8 +206,10 @@ case "$AGENT_CHOICE" in
         if ! command -v claude &>/dev/null; then
             echo "[entrypoint] Installing Claude Code..."
             if ! curl -fsSL https://claude.ai/install.sh | bash; then
+                # No sudo: NPM_CONFIG_PREFIX points at an agent-writable dir,
+                # so this works in strict-sudo sandboxes too.
                 echo "[entrypoint] Native installer failed, trying npm fallback..."
-                sudo npm install -g @anthropic-ai/claude-code \
+                npm install -g @anthropic-ai/claude-code \
                     || echo "[entrypoint] WARNING: Claude Code install failed."
             fi
         fi
@@ -215,7 +220,7 @@ case "$AGENT_CHOICE" in
     copilot|all)
         if ! command -v copilot &>/dev/null && command -v npm &>/dev/null; then
             echo "[entrypoint] Installing GitHub Copilot CLI..."
-            sudo npm install -g @github/copilot
+            npm install -g @github/copilot
         fi
         ;;
 esac

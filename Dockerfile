@@ -31,7 +31,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends locales sudo \
            useradd --uid "$USER_UID" --gid "$USER_GID" -m -s /bin/bash "$USERNAME"; \
        fi
 
-# Allow passwordless sudo
+# Allow passwordless sudo.
+#
+# This is the permissive default, and it means the agent can flush the egress
+# firewall itself (`sudo iptables -F OUTPUT`) — the firewall stops accidental
+# and injected egress, not an agent that sets out to defeat it. Sandboxes
+# started with --strict-sudo have this file removed at boot by
+# sandbox-privileged-boot.sh, before the session is allowed to attach; it is
+# re-asserted on a permissive boot, so the mode is a per-sandbox choice rather
+# than a one-way change to the container. See docs/UPSTREAM-DOCKER-IMPROVEMENTS.md §1.
 RUN echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME
 
@@ -118,11 +126,17 @@ ENV CLAUDE_CONFIG_DIR="/home/$USERNAME/.claude"
 # so give mouse drag back to the host terminal. Wheel scrolling still works.
 ENV CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1
 
+# Runtime `npm install -g` targets an agent-writable prefix instead of /usr,
+# so installing an agent at boot needs no root. That is what lets strict-sudo
+# sandboxes drop the agent's general root before the session starts. Build-time
+# globals above were installed as root into /usr and stay there.
+ENV NPM_CONFIG_PREFIX="/home/$USERNAME/.npm-global"
+
 # Create workspace and config directories
-RUN mkdir -p /workspaces /home/$USERNAME/.claude/skills /home/$USERNAME/.config/gh /home/$USERNAME/.copilot /home/$USERNAME/.vibe
-RUN echo 'export PATH="$HOME/.local/bin:$PATH"' | tee -a /home/$USERNAME/.bashrc /home/$USERNAME/.profile \
+RUN mkdir -p /workspaces /home/$USERNAME/.claude/skills /home/$USERNAME/.config/gh /home/$USERNAME/.copilot /home/$USERNAME/.vibe /home/$USERNAME/.npm-global/bin
+RUN echo 'export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"' | tee -a /home/$USERNAME/.bashrc /home/$USERNAME/.profile \
     && echo 'alias claude="claude --dangerously-skip-permissions"' | tee -a /home/$USERNAME/.bashrc /home/$USERNAME/.profile
-RUN chown -R $USERNAME:$USERNAME /workspaces /home/$USERNAME/.claude /home/$USERNAME/.config /home/$USERNAME/.copilot /home/$USERNAME/.vibe
+RUN chown -R $USERNAME:$USERNAME /workspaces /home/$USERNAME/.claude /home/$USERNAME/.config /home/$USERNAME/.copilot /home/$USERNAME/.vibe /home/$USERNAME/.npm-global
 
 WORKDIR /tmp
 USER $USERNAME
@@ -130,21 +144,27 @@ USER $USERNAME
 # Install uv (Python package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
-ENV PATH="/home/$USERNAME/.local/bin:${PATH}"
+ENV PATH="/home/$USERNAME/.local/bin:/home/$USERNAME/.npm-global/bin:${PATH}"
 
 SHELL ["/bin/bash", "-c"]
 
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chmod=755 init-firewall.sh /usr/local/bin/init-firewall.sh
+COPY --chmod=755 sandbox-privileged-boot.sh /usr/local/bin/sandbox-privileged-boot.sh
 
-# Allow agent to run only the firewall script via sudo without a password.
-# (General passwordless sudo is granted earlier; this targeted entry keeps the
-# explicit intent clear and provides a deny-other-root path if the broader
-# rule is later tightened.)
+# The agent's single sudo entry: the privileged-boot wrapper, which takes no
+# instructions from its caller (it reads its config from PID 1's environment).
+# This is what the entrypoint uses to set up the firewall, publish
+# /etc/sandbox-info and apply the sudo policy, so it must stay available even
+# in strict-sudo sandboxes where /etc/sudoers.d/agent is removed at boot.
+#
+# Note there is deliberately no entry for init-firewall.sh itself: authorising
+# it directly would need `sudo env VAR=...` to pass the broker/adb host:port
+# config through, and authorising `env` is equivalent to full root.
 USER root
-RUN echo "$USERNAME ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" \
-        > /etc/sudoers.d/$USERNAME-firewall \
-    && chmod 0440 /etc/sudoers.d/$USERNAME-firewall
+RUN echo "$USERNAME ALL=(root) NOPASSWD: /usr/local/bin/sandbox-privileged-boot.sh" \
+        > /etc/sudoers.d/$USERNAME-boot \
+    && chmod 0440 /etc/sudoers.d/$USERNAME-boot
 USER $USERNAME
 
 WORKDIR /workspaces

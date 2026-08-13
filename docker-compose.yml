@@ -21,10 +21,15 @@ services:
     #   - default
     #   - dev-net
 
-    # Required for the in-container iptables firewall.
+    # NET_ADMIN/NET_RAW: the in-container iptables firewall.
+    # SYS_PTRACE: lets the root privileged-boot wrapper read /proc/1/environ,
+    # which is where it takes its config from (a source the container cannot
+    # forge). Without it the wrapper fails and, since the firewall now fails
+    # closed, the container refuses to start.
     cap_add:
       - NET_ADMIN
       - NET_RAW
+      - SYS_PTRACE
 
     # Publish the sandbox's host-visible port. Override at compose-up time
     # via SANDBOX_HOST_PORT, e.g.:

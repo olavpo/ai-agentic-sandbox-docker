@@ -14,7 +14,7 @@ This repo currently uses the **Docker setup at the root** as the active path. A 
 - Pre-installed Playwright + chromium with all Ubuntu 24.04 system deps
 - Optional language extensions: Go, Java, Rust
 - Multiple AI providers: Anthropic, OpenAI, Mistral, GitHub
-- Non-root `agent` user with passwordless sudo
+- Non-root `agent` user with passwordless sudo, or `--strict-sudo` for a sandbox where the agent cannot remove its own firewall
 - Named Docker volumes for persistent, isolated agent config
 - Bidirectional skill sync between host and container (`sync-skills`) — pushes only *symlinked* skills (those the ai-skills manager has enabled); marketplace plugins like superpowers are installed natively in the container instead (see "Claude plugins")
 - HTTPS-only git access (SSH disabled for security)
@@ -78,8 +78,55 @@ Options (for `start`):
   --network <name>          Attach to a Docker network (repeatable)
   -p, --port HOST:CONT      Publish an additional port (repeatable)
   --host-network            Opt out of bridge+firewall (legacy mode)
+  --strict-sudo             No general root for the agent (see "Sudo modes")
+  --no-strict-sudo          Keep general sudo (default)
   --no-config               Skip mounting agent config volumes
 ```
+
+## Sudo modes
+
+By default the agent has passwordless `sudo` inside the container. That is convenient — runtime `apt-get`, system tweaks — but it also means the agent can remove the egress firewall that is meant to contain it:
+
+```bash
+sudo iptables -P OUTPUT ACCEPT && sudo iptables -F OUTPUT   # unrestricted internet
+sudo ipset add allowed-domains <ip>                         # allowlist any host
+```
+
+`--strict-sudo` takes that away per sandbox:
+
+```bash
+agent-sandbox start ~/Repos/my-app --strict-sudo
+```
+
+Set `SANDBOX_STRICT_SUDO=1` in `.env` to make it the default for every sandbox — including the ones `sbx` creates, since `sbx` goes through `agent-sandbox start` — and use `--no-strict-sudo` for a one-off exception.
+
+| | Default | `--strict-sudo` |
+|---|---|---|
+| `sudo` for the agent | passwordless, unrestricted | denied |
+| Firewall removable by the agent | yes | no |
+| Runtime `apt-get` | works | **not available** |
+| Runtime `npm install -g` | works | works (agent-writable prefix) |
+
+**The tradeoff is runtime package installs.** A curated sudo allowlist is not a middle ground: `apt-get install` runs maintainer scripts as root, so any package-manager entry is equivalent to full root. In a strict sandbox anything the agent needs has to be in the image already, added via `agent-sandbox extend`, or installed from the host:
+
+```bash
+docker exec -u root <container> apt-get update && apt-get install -y <pkg>
+```
+
+That path goes through the same egress firewall, which is why the Ubuntu/Debian mirrors stay on the allowlist in `init-firewall.sh`.
+
+The agent is told which mode it is in: the in-container brief has a different Permissions section for each, so a strict sandbox's agent doesn't waste turns on `sudo apt-get` and misread the failures.
+
+### How it works
+
+Privileged boot happens in `sandbox-privileged-boot.sh`, the single command the agent may run as root. It applies the sudo policy, publishes `/etc/sandbox-info` and initialises the firewall — and it takes **no** instructions from its caller. Two things make that necessary:
+
+- Passing the broker/adb host:port config through `sudo env VAR=… init-firewall.sh` would require authorising `env`, which is equivalent to full root.
+- Passing it as arguments would be worse: the agent can run the wrapper whenever it likes, so `--broker-url=http://attacker:80` would let it punch its own hole in the firewall.
+
+So the wrapper reads its config from `/proc/1/environ`. PID 1's environment is fixed by `docker run` at container creation and cannot be altered from inside, which is what makes it trustworthy. Reading another user's environ is a ptrace-mode access, so the container is given `SYS_PTRACE`; that grants the agent nothing, since capabilities belong to processes and the agent is either not root (strict) or already root (default).
+
+The mode is re-applied on every boot rather than being a one-way change to the container. That matters: the container filesystem persists across `stop`/`start`, so a sandbox that dropped sudo once and never restored the sudoers entry would fail its next firewall init — and with the firewall failing closed, would never boot again.
 
 ## Everyday use: `sbx`
 
@@ -341,8 +388,7 @@ The prune is deliberately scoped to this image — it never runs `docker image p
 - Resource limits prevent runaway agent processes
 - API keys injected at runtime, never baked into images
 - **Egress firewall on by default**: outbound traffic restricted to an explicit allowlist (Anthropic, GitHub, npm, pypi, dhis2.org, dev CDNs). Adapted from [Anthropic's reference dev container](https://github.com/anthropics/claude-code/blob/main/.devcontainer/init-firewall.sh) with extensions for our domain list and Docker-network handling. Verified at every container start, **fails closed** if init fails, DNS is pinned to the container's own resolver, and the launchers refuse to attach until egress is actually filtered. Bypass with `--host-network` if needed.
-
-  Known gap: the agent has passwordless `sudo` inside the container, so it can flush the firewall itself (`sudo iptables -F OUTPUT`). The firewall stops accidental and incidental egress, not an agent that deliberately sets out to defeat it. See `docs/UPSTREAM-DOCKER-IMPROVEMENTS.md` §1.
+- **Optional strict sudo** (`--strict-sudo`, or `SANDBOX_STRICT_SUDO=1` in `.env`): removes the agent's general root so the firewall cannot be removed from inside. Off by default; costs runtime `apt-get`. See "Sudo modes" above. In the default mode the firewall stops accidental and injected egress, not an agent that deliberately sets out to defeat it.
 
 ### Read-only base image
 

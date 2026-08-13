@@ -42,6 +42,12 @@ Options for `start`:
                          SANDBOX_HOST_PORT_2.
   --host-network         Opt out of bridge networking and firewall. Use --network=host
                          and skip iptables. SANDBOX_HOST_PORT is not set.
+  --strict-sudo          Take away the agent's general passwordless sudo, so it
+                         cannot flush the egress firewall. No runtime apt-get:
+                         whatever the agent needs must be in the image, or be
+                         installed from the host with docker exec -u root.
+  --no-strict-sudo       Keep general sudo (the default). Use to override a
+                         SANDBOX_STRICT_SUDO=1 default set in .env.
   --no-config            Don't mount agent config directories
   --no-dhis2-broker      Don't wire up the DHIS2 instance broker (d2-broker).
                          By default, if $DHIS2_BASE/_broker/tokens.json exists
@@ -179,6 +185,11 @@ cmd_start() {
     local use_dhis2_broker=true
     local use_adb=true
     local agent_choice="claude"
+    # Whether the agent gets general passwordless sudo in this sandbox. Defaults
+    # from SANDBOX_STRICT_SUDO, which is sourced from .env above — so setting it
+    # there flips the default for every sandbox, including the ones `sbx`
+    # creates, without any flag plumbing in `sbx` itself.
+    local strict_sudo="${SANDBOX_STRICT_SUDO:-0}"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -191,6 +202,8 @@ cmd_start() {
             --no-config) mount_config=false; shift ;;
             --no-dhis2-broker) use_dhis2_broker=false; shift ;;
             --no-adb) use_adb=false; shift ;;
+            --strict-sudo) strict_sudo=1; shift ;;
+            --no-strict-sudo) strict_sudo=0; shift ;;
             --agent)
                 agent_choice="$2"
                 case "$agent_choice" in
@@ -334,16 +347,29 @@ cmd_start() {
     # run only accepts one --network, so the first goes into the run command
     # and any extras are attached afterward via `docker network connect`.
     local net_args=()
-    local cap_args=()
+    # SYS_PTRACE lets the root privileged-boot wrapper read /proc/1/environ,
+    # which is how it gets its config from a source the container cannot forge.
+    # Reading another uid's environ is a ptrace-mode access, so plain root is not
+    # enough and Docker's default capability set omits this one. It grants the
+    # agent nothing: capabilities belong to processes, and the agent is not root
+    # (strict mode) or already has root anyway (permissive mode).
+    local cap_args=(--cap-add=SYS_PTRACE)
     local port_args=()
     local sandbox_port=""
     local sandbox_port2=""
+
+    # Read by sandbox-privileged-boot.sh from /proc/1/environ at every boot, so
+    # the mode is fixed for the life of the container but re-applied on each
+    # start rather than being a one-way change to its filesystem.
+    if [[ "$strict_sudo" == "1" ]]; then
+        env_args+=(-e "SANDBOX_STRICT_SUDO=1")
+    fi
 
     if $host_network; then
         net_args=(--network=host)
         env_args+=(-e "SANDBOX_SKIP_FIREWALL=1")
     else
-        cap_args=(--cap-add=NET_ADMIN --cap-add=NET_RAW)
+        cap_args+=(--cap-add=NET_ADMIN --cap-add=NET_RAW)
         # Two host-visible ports by default: enough for an App Platform app that
         # serves a dev server on one and its proxy on the other, without the
         # user having to remember explicit -p flags. Use -p for a third+.
@@ -390,6 +416,11 @@ cmd_start() {
     else
         echo "  Network: ${all_networks[*]:-bridge} (firewall on, egress allowlisted)"
         echo "  Host-visible ports: http://localhost:$sandbox_port (\$SANDBOX_HOST_PORT), http://localhost:$sandbox_port2 (\$SANDBOX_HOST_PORT_2)"
+    fi
+    if [[ "$strict_sudo" == "1" ]]; then
+        echo "  Sudo: strict (no general root for the agent; no runtime apt-get)"
+    else
+        echo "  Sudo: passwordless (agent can also flush the firewall)"
     fi
     [[ -n "$dhis2_broker_active" ]] && echo "  DHIS2 broker: $dhis2_broker_active (agent-scoped token)"
     [[ -n "$adb_active" ]] && echo "  Android adb: $adb_active"
