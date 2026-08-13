@@ -157,6 +157,17 @@ cmd_build() {
 # so a restart cannot be satisfied by a stale one.
 wait_for_firewall() {
     local c="$1" i
+    # Sandboxes created before the handshake existed never write the marker, and
+    # cannot be made to: image content is fixed at creation. Waiting on them
+    # would block for the full timeout and then refuse to attach, so probe the
+    # container's own entrypoint for the capability first.
+    if ! docker exec "$c" grep -q sandbox-firewall-ready \
+            /usr/local/bin/entrypoint.sh 2>/dev/null; then
+        echo "Note: '$c' predates the firewall readiness handshake; attaching without it."
+        echo "  It also lacks pinned DNS, fail-closed init and the self-healing loop."
+        echo "  Recreate it to pick those up: agent-sandbox remove $c"
+        return 0
+    fi
     for ((i = 0; i < 90; i++)); do
         docker exec "$c" test -f /tmp/sandbox-firewall-ready 2>/dev/null && return 0
         # Firewall init fails closed, so a container that refused to come up
@@ -238,8 +249,15 @@ cmd_start() {
 
     ensure_image
 
-    # If a container with this name already exists, resume it if stopped, or warn if running
+    # If a container with this name already exists, resume it if stopped, or warn if running.
+    # Resuming reuses the container as created: the sudo mode and the capabilities the
+    # wrapper needs are fixed by `docker run`, so --strict-sudo cannot be applied after
+    # the fact. Say so rather than appearing to honour it.
     if docker ps -a --format '{{.Names}}' | grep -q "^${container_name}$"; then
+        if [[ "$strict_sudo" == "1" ]]; then
+            echo "Note: --strict-sudo only applies when a sandbox is created; '$container_name' already exists."
+            echo "  To switch it: agent-sandbox remove $container_name, then start again with --strict-sudo."
+        fi
         if docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
             echo "Sandbox '$container_name' is already running."
             echo "  Attach with: agent-sandbox shell $container_name"

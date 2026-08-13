@@ -73,6 +73,17 @@ container_project_label() {
 # cannot satisfy this with a stale one.
 wait_for_firewall() {
     local c="$1" i
+    # Sandboxes created before the handshake existed never write the marker, and
+    # cannot be made to: image content is fixed at creation. Waiting on them
+    # would block for the full timeout and then refuse to attach, so probe the
+    # container's own entrypoint for the capability first.
+    if ! docker exec "$c" grep -q sandbox-firewall-ready \
+            /usr/local/bin/entrypoint.sh 2>/dev/null; then
+        echo "Note: '$c' predates the firewall readiness handshake; attaching without it."
+        echo "  It also lacks pinned DNS, fail-closed init and the self-healing loop."
+        echo "  Recreate it to pick those up: agent-sandbox remove $c && sbx"
+        return 0
+    fi
     for ((i = 0; i < 90; i++)); do
         docker exec "$c" test -f /tmp/sandbox-firewall-ready 2>/dev/null && return 0
         # Firewall init now fails closed, so a container that refused to come
