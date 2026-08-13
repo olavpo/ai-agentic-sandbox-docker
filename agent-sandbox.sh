@@ -106,6 +106,29 @@ cmd_build() {
     docker build -t "$IMAGE_NAME" "$SCRIPT_DIR"
 }
 
+# Block until the entrypoint signals that egress is filtered. `docker run` and
+# `docker start` both return before the firewall is configured, and `docker
+# exec` bypasses the entrypoint's ordering, so attaching early means attaching
+# to an unfiltered container. The entrypoint clears the marker on every start,
+# so a restart cannot be satisfied by a stale one.
+wait_for_firewall() {
+    local c="$1" i
+    for ((i = 0; i < 90; i++)); do
+        docker exec "$c" test -f /tmp/sandbox-firewall-ready 2>/dev/null && return 0
+        # Firewall init fails closed, so a container that refused to come up
+        # unprotected has exited rather than sitting there unfiltered.
+        if ! docker ps --format '{{.Names}}' | grep -q "^${c}$"; then
+            echo "Error: sandbox '$c' exited during startup." >&2
+            echo "  Firewall init likely failed. Inspect with: docker logs $c" >&2
+            exit 1
+        fi
+        sleep 1
+    done
+    echo "Error: firewall did not come up within 90s; refusing to attach." >&2
+    echo "  Inspect with: docker logs $c" >&2
+    exit 1
+}
+
 cmd_start() {
     local project_dir=""
     local container_name="agentic-sandbox"
@@ -173,6 +196,7 @@ cmd_start() {
         fi
         echo "Resuming stopped sandbox '$container_name'..."
         docker start "$container_name" >/dev/null
+        wait_for_firewall "$container_name"
         echo "Sandbox running. Attach with:"
         echo "  agent-sandbox shell $container_name"
         return
@@ -354,6 +378,12 @@ cmd_start() {
             echo "  Attached additional network: $net"
         done
     fi
+
+    # Wait for the firewall before anything attaches. This deliberately comes
+    # after the extra-network attach above: init-firewall.sh reads `ip route`
+    # to allow every attached bridge subnet, so blocking earlier would give it
+    # less chance to see those networks, not more.
+    wait_for_firewall "$container_name"
 
     # Wait for the chosen agent to be installed. The entrypoint installs
     # whichever agent matches AGENT_CHOICE; we wait for its binary on PATH.

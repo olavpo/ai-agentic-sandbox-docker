@@ -128,6 +128,12 @@ Each agent's auth/state lives in its named volume, so logging in once persists a
 
 By default the sandbox uses **bridge networking with an egress firewall** that drops outbound traffic to anything not on the allowlist. The container starts an iptables firewall at boot (verified by trying to reach `example.com`, which must fail, and `api.anthropic.com`, which must succeed).
 
+The firewall **fails closed**: if init fails (no `NET_ADMIN`, a DNS hiccup, an unreachable GitHub API), the container refuses to start rather than coming up with unrestricted egress. Use `--host-network` when you deliberately want no firewall.
+
+The launchers also **wait for the firewall before attaching**. `docker start` returns before the entrypoint has finished configuring iptables, and `docker exec` bypasses the entrypoint's ordering entirely, so without this a session could be live while egress was still open — a 2–4 s window on every start, not just first creation. The entrypoint clears `/tmp/sandbox-firewall-ready` on boot and writes it once egress is filtered; `sbx` and `agent-sandbox` block on that marker (90 s timeout).
+
+**DNS is restricted to the container's own resolver.** A rule matching only on port 53 would let any unprivileged process reach any nameserver on the internet and tunnel data out past the allowlist. On a user-defined network (`dev-net`) the resolver is Docker's embedded one on `127.0.0.11`, reached over loopback; on the default bridge the external resolver from `/etc/resolv.conf` gets an explicit rule. Residual risk worth knowing: that resolver is recursive, so lookups of an attacker-controlled domain are still forwarded upstream. Pinning the destination removes the trivial channel, not DNS tunnelling in general — closing that needs a filtering resolver, not iptables.
+
 To make a server the agent starts visible in your host browser, `agent-sandbox start` pre-publishes a random port from `49200–49300` and exposes it inside the container as:
 
 - the `SANDBOX_HOST_PORT` environment variable
@@ -314,7 +320,9 @@ SANDBOX_GITHUB_TOKEN=github_pat_...
 - All git via HTTPS using `GITHUB_TOKEN`
 - Resource limits prevent runaway agent processes
 - API keys injected at runtime, never baked into images
-- **Egress firewall on by default**: outbound traffic restricted to an explicit allowlist (Anthropic, GitHub, npm, pypi, dhis2.org, dev CDNs). Adapted from [Anthropic's reference dev container](https://github.com/anthropics/claude-code/blob/main/.devcontainer/init-firewall.sh) with extensions for our domain list and Docker-network handling. Verified at every container start. Bypass with `--host-network` if needed.
+- **Egress firewall on by default**: outbound traffic restricted to an explicit allowlist (Anthropic, GitHub, npm, pypi, dhis2.org, dev CDNs). Adapted from [Anthropic's reference dev container](https://github.com/anthropics/claude-code/blob/main/.devcontainer/init-firewall.sh) with extensions for our domain list and Docker-network handling. Verified at every container start, **fails closed** if init fails, DNS is pinned to the container's own resolver, and the launchers refuse to attach until egress is actually filtered. Bypass with `--host-network` if needed.
+
+  Known gap: the agent has passwordless `sudo` inside the container, so it can flush the firewall itself (`sudo iptables -F OUTPUT`). The firewall stops accidental and incidental egress, not an agent that deliberately sets out to defeat it. See `docs/UPSTREAM-DOCKER-IMPROVEMENTS.md` §1.
 
 ### Read-only base image
 

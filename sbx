@@ -62,6 +62,33 @@ container_project_label() {
     docker inspect -f "{{index .Config.Labels \"$PROJECT_LABEL\"}}" "$1" 2>/dev/null || true
 }
 
+# --- firewall handshake ----------------------------------------------------
+
+# `docker start` returns as soon as the container is up, but the entrypoint
+# configures the egress firewall asynchronously — and `docker exec` bypasses
+# the entrypoint's ordering entirely. Without this wait a session can be live
+# while egress is still unrestricted (measured at 2-4s in the common case,
+# bounded only by how long ~40 DNS lookups plus the GitHub API call take).
+# The entrypoint clears the marker on every start, so a restarted container
+# cannot satisfy this with a stale one.
+wait_for_firewall() {
+    local c="$1" i
+    for ((i = 0; i < 90; i++)); do
+        docker exec "$c" test -f /tmp/sandbox-firewall-ready 2>/dev/null && return 0
+        # Firewall init now fails closed, so a container that refused to come
+        # up unprotected is gone rather than sitting there unfiltered.
+        if ! container_running "$c"; then
+            echo "Error: sandbox '$c' exited during startup." >&2
+            echo "  Firewall init likely failed. Inspect with: docker logs $c" >&2
+            exit 1
+        fi
+        sleep 1
+    done
+    echo "Error: firewall did not come up within 90s; refusing to attach." >&2
+    echo "  Inspect with: docker logs $c" >&2
+    exit 1
+}
+
 # Container name for a project path: sbx-<sanitized basename>, with a short
 # path hash appended when that name is taken by a different project (or by a
 # pre-label container whose project path is unknown).
@@ -151,6 +178,10 @@ cmd_launch() {
         echo "Creating sandbox '$container' for $project_dir..."
         "$AGENT_SANDBOX" start "$project_dir" -n "$container" --agent "$agent"
     fi
+
+    # Block until egress is actually filtered. No-op once the marker exists,
+    # so the already-running and just-created paths cost nothing.
+    wait_for_firewall "$container"
 
     # Workdir: the full-path mount (PROJECT_DIR), or the legacy /<basename>
     # mount for containers created before PROJECT_DIR existed.

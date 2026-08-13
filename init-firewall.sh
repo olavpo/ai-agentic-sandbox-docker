@@ -158,9 +158,35 @@ if [ -n "$DOCKER_DNS_RULES" ]; then
     echo "$DOCKER_DNS_RULES" | xargs -L 1 iptables -t nat
 fi
 
-# Allow DNS and localhost loopback outbound (INPUT is permissive — see below).
-iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+# Allow localhost loopback outbound (INPUT is permissive — see below).
+# This also covers DNS on user-defined Docker networks, where /etc/resolv.conf
+# points at Docker's embedded resolver on 127.0.0.11: those queries leave via
+# lo, and the NAT rules restored above rewrite the port, so a --dport 53 filter
+# rule would not match them anyway.
 iptables -A OUTPUT -o lo -j ACCEPT
+
+# Allow DNS *only* to the resolvers this container is actually configured to
+# use. A blanket "--dport 53 -j ACCEPT" matches on port alone, which lets any
+# unprivileged process reach any nameserver on the internet and tunnel data out
+# past the allowlist. On the default bridge the resolver is an external address
+# (e.g. Docker Desktop's gateway), so it still needs an explicit rule.
+dns_pinned=false
+while read -r ns; do
+    [[ -z "$ns" ]] && continue
+    # Loopback resolvers are already covered by the -o lo rule above.
+    [[ "$ns" =~ ^127\. ]] && { dns_pinned=true; continue; }
+    [[ "$ns" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || continue
+    echo "Pinning DNS to resolver $ns"
+    iptables -A OUTPUT -p udp -d "$ns" --dport 53 -j ACCEPT
+    iptables -A OUTPUT -p tcp -d "$ns" --dport 53 -j ACCEPT
+    dns_pinned=true
+done < <(awk '/^[[:space:]]*nameserver[[:space:]]/ {print $2}' /etc/resolv.conf | sort -u)
+
+# Never leave the container unable to resolve anything at all.
+if [[ "$dns_pinned" == false ]]; then
+    echo "WARNING: no usable nameserver in /etc/resolv.conf; allowing DNS to any host"
+    iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+fi
 
 # Create the ipset that will hold all allowed CIDRs
 ipset create allowed-domains hash:net

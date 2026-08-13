@@ -11,8 +11,18 @@ export SSH_AUTH_SOCK=""
 # --- Egress firewall ---
 # Run unless the user explicitly opted into host networking via
 # SANDBOX_SKIP_FIREWALL=1 (set by `agent-sandbox start --host-network`).
-# Requires NET_ADMIN + NET_RAW caps on the container; skips cleanly if
-# they're missing so the container still boots.
+# Requires NET_ADMIN + NET_RAW caps on the container; without them init fails
+# and the container refuses to boot rather than coming up unprotected.
+#
+# FIREWALL_READY is the launcher's attach handshake. `docker exec` bypasses
+# this entrypoint's ordering entirely, so without it a session can attach
+# while egress is still unrestricted — a window that recurs on every
+# `docker start`, not just on first creation. Clearing it here matters: a
+# restarted container would otherwise reuse a stale marker and the wait
+# would be a no-op.
+FIREWALL_READY=/tmp/sandbox-firewall-ready
+rm -f "$FIREWALL_READY"
+
 if [[ "${SANDBOX_SKIP_FIREWALL:-}" != "1" ]]; then
     # DHIS2_BROKER_URL and ADB_SERVER_SOCKET are forwarded explicitly because
     # sudo resets the environment; the firewall opens egress to just those
@@ -35,12 +45,25 @@ if [[ "${SANDBOX_SKIP_FIREWALL:-}" != "1" ]]; then
             done
         ) &
         disown
+        : > "$FIREWALL_READY"
+        chmod 0644 "$FIREWALL_READY"
     else
-        echo "[entrypoint] WARNING: firewall init failed. Container may have unrestricted egress."
-        echo "[entrypoint]   To run without firewall on purpose, pass --host-network to agent-sandbox start."
+        # Fail closed. A transient DNS failure or GitHub API hiccup used to
+        # produce a silently unprotected sandbox behind one warning line. An
+        # explicit opt-out exists, which is what makes refusing to boot
+        # affordable: whoever wants no firewall has a supported way to say so.
+        echo "[entrypoint] FATAL: firewall init failed; refusing to start unprotected." >&2
+        echo "[entrypoint]   To run without a firewall on purpose:" >&2
+        echo "[entrypoint]     agent-sandbox start <dir> --host-network" >&2
+        echo "[entrypoint]   (or set SANDBOX_SKIP_FIREWALL=1 for a hand-rolled docker run)" >&2
+        exit 1
     fi
 else
     echo "[entrypoint] SANDBOX_SKIP_FIREWALL=1 — running with unrestricted network."
+    # Still signal readiness, or the launcher's wait times out on a sandbox
+    # that was deliberately started without a firewall.
+    : > "$FIREWALL_READY"
+    chmod 0644 "$FIREWALL_READY"
 fi
 
 # --- Surface host-visible ports to the agent (container-local channels) ---
