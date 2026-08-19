@@ -70,19 +70,21 @@ else
     exit 1
 fi
 
-# --- Generic sandbox brief in ~/.claude/CLAUDE.md ---
-# Written into the shared `agentic-sandbox-claude` volume, so there is exactly
-# one CLAUDE.md for every claude sandbox on the machine. The block is delimited
-# and rewritten on every start, so updates to this entrypoint propagate to all
-# sandboxes the next time they boot, and user content OUTSIDE the markers is
-# preserved.
+# --- Sandbox brief in ~/.claude/CLAUDE.md ---
+# ~/.claude is the `agentic-sandbox-claude` volume, shared by every claude
+# sandbox on the machine, so there is exactly ONE of these files and every
+# sandbox reads it. The block is rewritten on each boot, which means anything
+# per-sandbox written here is decided by whichever sandbox booted last.
 #
-# KNOWN LIMITATION: because the file is shared but rewritten per boot, any
-# per-sandbox content in the block reflects whichever sandbox booted last. The
-# Permissions section below is exactly that — a --strict-sudo sandbox and a
-# permissive one share one CLAUDE.md, so one of them can be told the wrong thing
-# about its own sudo. Fixing that properly means moving per-sandbox text out of
-# the shared volume.
+# Everything in the block below is therefore written to be true in any sandbox:
+# the broker and adb sections are phrased conditionally ("if X is set"), and the
+# Permissions section describes both sudo modes with the command to tell them
+# apart rather than asserting one. Per-sandbox values live in /etc/sandbox-info,
+# which is container-local. Keep it that way when editing — a statement here that
+# only holds for some sandboxes will be read by all of them.
+#
+# Changes to this entrypoint propagate on next boot; content outside the markers
+# survives.
 mkdir -p "$AGENT_HOME/.claude"
 claude_md="$AGENT_HOME/.claude/CLAUDE.md"
 start_marker="<!-- BEGIN agent-sandbox -->"
@@ -96,14 +98,19 @@ end_marker="<!-- END agent-sandbox -->"
 addendum_start="<!-- BEGIN host-addendum -->"
 addendum_end="<!-- END host-addendum -->"
 
+# Rewrites in place rather than `mv`-ing a temp file over the target: CLAUDE.md
+# is a bind-mounted file (see below), and replacing a mount point fails with
+# "Resource busy". Truncating and rewriting keeps the same inode.
 strip_block() {
     local file="$1" start="$2" end="$3"
     [[ -f "$file" ]] || return 0
+    local tmp="/tmp/claude-md-strip.$$"
     awk -v start="$start" -v end="$end" '
         $0 == start { skip = 1; next }
         $0 == end   { skip = 0; next }
         !skip       { print }
-    ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+    ' "$file" > "$tmp" && cat "$tmp" > "$file"
+    rm -f "$tmp"
 }
 
 strip_block "$claude_md" "$start_marker" "$end_marker"
@@ -197,26 +204,29 @@ HTTPS only (SSH is not installed). `GITHUB_TOKEN`, when set, is the dedicated sa
 
 EOF
 
-# The Permissions section depends on this sandbox's sudo mode. Getting this
-# wrong is not cosmetic: an agent told it has root that it doesn't will burn
-# turns on `sudo apt-get` and misread the failures as something else.
-if [[ "${SANDBOX_STRICT_SUDO:-}" == "1" ]]; then
-    cat >> "$claude_md" <<'EOF'
+# The sudo mode is per-sandbox, but this file is not: ~/.claude is a volume
+# shared by every claude sandbox, so whatever is written here is what ALL of them
+# read. Asserting a mode would therefore be a coin flip decided by whichever
+# sandbox booted last — and telling an agent it has root when it does not is
+# exactly the failure this section exists to prevent. So describe both modes and
+# give the one-command test instead. Correct in every sandbox, no per-container
+# state, nothing to keep in sync.
+cat >> "$claude_md" <<'EOF'
 ### Permissions
 
-You run as the `agent` user. This sandbox was started with **strict sudo**: you have no general root here, so `sudo apt-get install …`, `sudo iptables …` and similar will fail, and there is no way around that from inside. This is deliberate — it is what stops the egress firewall from being removable.
+You run as the `agent` user, and sudo comes in two modes set per sandbox at creation — so **check rather than assume**:
 
-Whatever you need should already be in the image. If something is genuinely missing, say so and ask the user to install it from the host (`docker exec -u root <container> …`) or add it to the image; don't spend turns looking for a privilege-escalation route. Resource limits: 8 GB RAM, 4 CPUs.
+```bash
+sudo -n true && echo "passwordless sudo" || echo "strict sudo"
+```
+
+`/etc/sandbox-info` records the same thing as `SANDBOX_STRICT_SUDO`, along with this sandbox's host-visible ports.
+
+- **Passwordless sudo**: system changes inside the container work. Sudo doesn't reach the user's host. Note it also reaches the egress firewall — don't reconfigure or flush it to work around a blocked host; ask the user to allowlist what you need.
+- **Strict sudo** (`--strict-sudo`): you have no general root, so `sudo apt-get install …`, `sudo iptables …` and similar fail, and there is no way around it from inside. That is deliberate: it is what stops the egress firewall from being removable. Whatever you need should already be in the image — if something is genuinely missing, say so and ask the user to install it from the host (`docker exec -u root <container> …`) or add it to the image. Don't spend turns hunting for a privilege-escalation route.
+
+Resource limits: 8 GB RAM, 4 CPUs.
 EOF
-else
-    cat >> "$claude_md" <<'EOF'
-### Permissions
-
-You run as the `agent` user with passwordless `sudo` for system changes inside the container. Sudo doesn't reach the user's host. Resource limits: 8 GB RAM, 4 CPUs.
-
-Note that `sudo` also reaches the egress firewall. Don't reconfigure or flush it to work around a blocked host — ask the user to allowlist what you need instead.
-EOF
-fi
 
 cat >> "$claude_md" <<'EOF'
 <!-- END agent-sandbox -->

@@ -83,14 +83,17 @@ else
     chmod 0440 "$SUDOERS_BLANKET"
 fi
 
-# 2. Publish the host-visible ports for tools that don't read the environment.
-if [[ -n "$HOST_PORT" ]]; then
-    {
-        echo "SANDBOX_HOST_PORT=$HOST_PORT"
-        [[ -n "$HOST_PORT_2" ]] && echo "SANDBOX_HOST_PORT_2=$HOST_PORT_2"
-    } > /etc/sandbox-info
-    chmod 0644 /etc/sandbox-info
-fi
+# 2. Record this sandbox's own facts for tools — and agents — that need them.
+# Written unconditionally, unlike the ports it used to hold alone: ~/.claude
+# is shared between all sandboxes, so the brief there cannot state per-sandbox
+# values. This file is container-local and therefore the authoritative answer
+# to "what is true of THIS sandbox".
+{
+    echo "SANDBOX_STRICT_SUDO=${STRICT_SUDO:-0}"
+    [[ -n "$HOST_PORT" ]] && echo "SANDBOX_HOST_PORT=$HOST_PORT"
+    [[ -n "$HOST_PORT_2" ]] && echo "SANDBOX_HOST_PORT_2=$HOST_PORT_2"
+} > /etc/sandbox-info
+chmod 0644 /etc/sandbox-info
 
 # 3. Egress firewall. Skipping is an explicit opt-in from the launcher
 #    (`--host-network`); the sudo policy above still applies either way.

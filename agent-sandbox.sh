@@ -310,6 +310,14 @@ cmd_start() {
         lessons_active="$lessons_dir"
     fi
 
+    # NOTE: a per-sandbox CLAUDE.md bind-mounted over the shared volume's copy
+    # was tried and rejected. It works until any container replaces the shared
+    # volume's CLAUDE.md by rename — which every sandbox built before that change
+    # does on boot — at which point the nested mount is orphaned and running
+    # sandboxes silently fall back to the shared file. Silent is worse than
+    # wrong, so per-sandbox facts are handled in the brief instead: it tells the
+    # agent to check its own sudo rather than asserting a mode. See entrypoint.sh.
+
     # --- Host-managed CLAUDE.md addendum ---
     # Read-only so the agent cannot rewrite the host's copy. entrypoint.sh splices
     # it into ~/.claude/CLAUDE.md inside the sandbox brief's markers, which means
