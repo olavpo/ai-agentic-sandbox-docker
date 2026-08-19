@@ -296,6 +296,32 @@ cmd_start() {
         esac
     fi
 
+    # --- Shared infrastructure-lessons directory ---
+    # One host directory, mounted read-WRITE at the same path in every sandbox,
+    # so the infra-lessons skill can keep a single LESSONS.md plus a per-sandbox
+    # lessons-scratch-<hostname>.md. Deliberately under /mnt and NOT inside the
+    # project mount or /workspaces: project tooling that walks the tree (prettier,
+    # eslint) must never find it. Only mounted when the host directory exists, so
+    # a checkout without one is unaffected.
+    local lessons_dir="${SANDBOX_LESSONS_DIR:-$HOME/Repos/ai-agent-lessons}"
+    local lessons_active=""
+    if [[ -d "$lessons_dir" ]]; then
+        volumes+=(-v "$lessons_dir:/mnt/lessons")
+        lessons_active="$lessons_dir"
+    fi
+
+    # --- Host-managed CLAUDE.md addendum ---
+    # Read-only so the agent cannot rewrite the host's copy. entrypoint.sh splices
+    # it into ~/.claude/CLAUDE.md inside the sandbox brief's markers, which means
+    # it is refreshed on every boot and cannot drift from the host file. Kept out
+    # of this repo on purpose: private guidance should not live in a public repo.
+    local host_claude_md="${SANDBOX_CLAUDE_MD:-$HOME/.claude/sandbox-CLAUDE.md}"
+    local host_claude_md_active=""
+    if [[ -f "$host_claude_md" ]]; then
+        volumes+=(-v "$host_claude_md:/mnt/host-claude-md:ro")
+        host_claude_md_active="$host_claude_md"
+    fi
+
     # Pass through API keys if set on host
     local env_args=(
         -e "PROJECT_NAME=$project_name"
@@ -425,6 +451,20 @@ cmd_start() {
     # Append any user-specified explicit port forwards.
     port_args+=("${extra_ports[@]+"${extra_ports[@]}"}")
 
+    # --- Stable, distinct hostname ---
+    # Without --hostname a container reports a random short ID, which the
+    # infra-lessons skill would turn into a new lessons-scratch-<hostname>.md on
+    # every recreation. Use the sandbox name so the scratch file is stable and
+    # identifiable. Container names allow '_' and '.', which are not valid in a
+    # hostname, so map anything outside [a-z0-9-] to '-', collapse repeats, trim
+    # leading/trailing '-' and cap at the 63-char DNS label limit.
+    local sandbox_hostname
+    sandbox_hostname=$(printf '%s' "$container_name" \
+        | LC_ALL=C tr '[:upper:]' '[:lower:]' \
+        | LC_ALL=C sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-+//; s/-+$//' \
+        | cut -c1-63 | LC_ALL=C sed -E 's/-+$//')
+    [[ -z "$sandbox_hostname" ]] && sandbox_hostname="sandbox"
+
     echo "Starting sandbox '$container_name'..."
     echo "  Project: $project_dir (mounted at the same path in the container)"
     echo "  Agent: $agent_choice"
@@ -442,9 +482,13 @@ cmd_start() {
     fi
     [[ -n "$dhis2_broker_active" ]] && echo "  DHIS2 broker: $dhis2_broker_active (agent-scoped token)"
     [[ -n "$adb_active" ]] && echo "  Android adb: $adb_active"
+    echo "  Hostname: $sandbox_hostname"
+    [[ -n "$lessons_active" ]] && echo "  Lessons: $lessons_active -> /mnt/lessons (read-write)"
+    [[ -n "$host_claude_md_active" ]] && echo "  CLAUDE.md addendum: $host_claude_md_active (read-only)"
 
     docker run -dit \
         --name "$container_name" \
+        --hostname "$sandbox_hostname" \
         --label "agentic-sandbox=true" \
         --label "agentic-sandbox-agent=$agent_choice" \
         --label "agentic-sandbox-project=$project_dir" \

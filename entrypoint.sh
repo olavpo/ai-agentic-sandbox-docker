@@ -198,6 +198,19 @@ Note that `sudo` also reaches the egress firewall. Don't reconfigure or flush it
 EOF
 fi
 
+# --- Host-managed addendum ---
+# agent-sandbox.sh bind-mounts a host file (default ~/.claude/sandbox-CLAUDE.md)
+# read-only at /mnt/host-claude-md. Splicing it in here, inside the markers,
+# means it is re-read on every boot: edit the host file, restart the sandbox, and
+# the brief follows — no drift, and no copy of private guidance in this repo.
+# Absent mount is the normal case for a fresh checkout, so stay quiet then.
+if [[ -r /mnt/host-claude-md ]]; then
+    printf '\n' >> "$claude_md"
+    cat /mnt/host-claude-md >> "$claude_md"
+    printf '\n' >> "$claude_md"
+    echo "[entrypoint] Spliced host CLAUDE.md addendum into $claude_md"
+fi
+
 cat >> "$claude_md" <<'EOF'
 <!-- END agent-sandbox -->
 EOF
