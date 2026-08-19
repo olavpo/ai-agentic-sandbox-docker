@@ -71,23 +71,43 @@ else
 fi
 
 # --- Generic sandbox brief in ~/.claude/CLAUDE.md ---
-# This is the same content for every sandbox (no per-container values), so
-# it's safe to write into the shared `agentic-sandbox-claude` volume. The
-# block is delimited and rewritten on every start, so updates to this
-# entrypoint propagate to all sandboxes the next time they boot. Any
-# user content OUTSIDE the markers is preserved.
+# Written into the shared `agentic-sandbox-claude` volume, so there is exactly
+# one CLAUDE.md for every claude sandbox on the machine. The block is delimited
+# and rewritten on every start, so updates to this entrypoint propagate to all
+# sandboxes the next time they boot, and user content OUTSIDE the markers is
+# preserved.
+#
+# KNOWN LIMITATION: because the file is shared but rewritten per boot, any
+# per-sandbox content in the block reflects whichever sandbox booted last. The
+# Permissions section below is exactly that — a --strict-sudo sandbox and a
+# permissive one share one CLAUDE.md, so one of them can be told the wrong thing
+# about its own sudo. Fixing that properly means moving per-sandbox text out of
+# the shared volume.
 mkdir -p "$AGENT_HOME/.claude"
 claude_md="$AGENT_HOME/.claude/CLAUDE.md"
 start_marker="<!-- BEGIN agent-sandbox -->"
 end_marker="<!-- END agent-sandbox -->"
+# The host addendum gets its OWN marker pair, deliberately outside the block
+# above. Sandboxes created before the addendum existed run an entrypoint baked
+# into their image that strips everything between the agent-sandbox markers and
+# rewrites it — and since CLAUDE.md lives in the shared config volume, such a
+# sandbox booting would otherwise delete the addendum for every sandbox. Content
+# outside its markers is the one thing an old entrypoint leaves alone.
+addendum_start="<!-- BEGIN host-addendum -->"
+addendum_end="<!-- END host-addendum -->"
 
-if [[ -f "$claude_md" ]]; then
-    awk -v start="$start_marker" -v end="$end_marker" '
+strip_block() {
+    local file="$1" start="$2" end="$3"
+    [[ -f "$file" ]] || return 0
+    awk -v start="$start" -v end="$end" '
         $0 == start { skip = 1; next }
         $0 == end   { skip = 0; next }
         !skip       { print }
-    ' "$claude_md" > "$claude_md.tmp" && mv "$claude_md.tmp" "$claude_md"
-fi
+    ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+}
+
+strip_block "$claude_md" "$start_marker" "$end_marker"
+strip_block "$claude_md" "$addendum_start" "$addendum_end"
 
 cat >> "$claude_md" <<'EOF'
 <!-- BEGIN agent-sandbox -->
@@ -198,22 +218,26 @@ Note that `sudo` also reaches the egress firewall. Don't reconfigure or flush it
 EOF
 fi
 
-# --- Host-managed addendum ---
-# agent-sandbox.sh bind-mounts a host file (default ~/.claude/sandbox-CLAUDE.md)
-# read-only at /mnt/host-claude-md. Splicing it in here, inside the markers,
-# means it is re-read on every boot: edit the host file, restart the sandbox, and
-# the brief follows — no drift, and no copy of private guidance in this repo.
-# Absent mount is the normal case for a fresh checkout, so stay quiet then.
-if [[ -r /mnt/host-claude-md ]]; then
-    printf '\n' >> "$claude_md"
-    cat /mnt/host-claude-md >> "$claude_md"
-    printf '\n' >> "$claude_md"
-    echo "[entrypoint] Spliced host CLAUDE.md addendum into $claude_md"
-fi
-
 cat >> "$claude_md" <<'EOF'
 <!-- END agent-sandbox -->
 EOF
+
+# --- Host-managed addendum ---
+# agent-sandbox.sh bind-mounts a host file (default ~/.claude/sandbox-CLAUDE.md)
+# read-only at /mnt/host-claude-md. It is appended AFTER the block above, in its
+# own markers, so an older sandbox booting cannot strip it out of the shared
+# CLAUDE.md (see the note by the marker definitions). Re-read on every boot: edit
+# the host file, restart the sandbox, and the context follows. Absent mount is
+# the normal case for a fresh checkout, so stay quiet then — the strip above has
+# already removed any stale copy.
+if [[ -r /mnt/host-claude-md ]]; then
+    {
+        printf '\n%s\n' "$addendum_start"
+        cat /mnt/host-claude-md
+        printf '%s\n' "$addendum_end"
+    } >> "$claude_md"
+    echo "[entrypoint] Appended host CLAUDE.md addendum to $claude_md"
+fi
 
 # --- Install the chosen agent(s) on first run ---
 # agent-sandbox.sh sets AGENT_CHOICE to one of: claude (default), copilot,
