@@ -31,17 +31,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends locales sudo \
            useradd --uid "$USER_UID" --gid "$USER_GID" -m -s /bin/bash "$USERNAME"; \
        fi
 
-# Allow passwordless sudo.
-#
-# This is the permissive default, and it means the agent can flush the egress
-# firewall itself (`sudo iptables -F OUTPUT`) — the firewall stops accidental
-# and injected egress, not an agent that sets out to defeat it. Sandboxes
-# started with --strict-sudo have this file removed at boot by
-# sandbox-privileged-boot.sh, before the session is allowed to attach; it is
-# re-asserted on a permissive boot, so the mode is a per-sandbox choice rather
-# than a one-way change to the container. See docs/UPSTREAM-DOCKER-IMPROVEMENTS.md §1.
-RUN echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$USERNAME \
-    && chmod 0440 /etc/sudoers.d/$USERNAME
+# No general sudo in the image. Strict is the default: the agent has no root,
+# so it cannot flush the egress firewall (`sudo iptables -F OUTPUT`). A sandbox
+# created with --allow-sudo gets /etc/sudoers.d/$USERNAME written at boot by
+# sandbox-privileged-boot.sh, and every other boot removes it again, so the mode
+# is a per-boot decision rather than a one-way change to the container. The
+# host can also grant it to a running sandbox until its next restart
+# (`agent-sandbox sudo <container> on`). See docs/UPSTREAM-DOCKER-IMPROVEMENTS.md §1.
 
 # Base system tools (includes iptables/ipset/aggregate for the egress firewall;
 # adb is the client for driving an Android emulator on the host — see
@@ -127,8 +123,8 @@ ENV CLAUDE_CONFIG_DIR="/home/$USERNAME/.claude"
 ENV CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1
 
 # Runtime `npm install -g` targets an agent-writable prefix instead of /usr,
-# so installing an agent at boot needs no root. That is what lets strict-sudo
-# sandboxes drop the agent's general root before the session starts. Build-time
+# so installing an agent at boot needs no root. That is what lets the default
+# strict sandbox run without the agent ever having general root. Build-time
 # globals above were installed as root into /usr and stay there.
 ENV NPM_CONFIG_PREFIX="/home/$USERNAME/.npm-global"
 
@@ -156,7 +152,7 @@ COPY --chmod=755 sandbox-privileged-boot.sh /usr/local/bin/sandbox-privileged-bo
 # instructions from its caller (it reads its config from PID 1's environment).
 # This is what the entrypoint uses to set up the firewall, publish
 # /etc/sandbox-info and apply the sudo policy, so it must stay available even
-# in strict-sudo sandboxes where /etc/sudoers.d/agent is removed at boot.
+# in strict sandboxes (the default), where /etc/sudoers.d/agent does not exist.
 #
 # Note there is deliberately no entry for init-firewall.sh itself: authorising
 # it directly would need `sudo env VAR=...` to pass the broker/adb host:port

@@ -20,7 +20,7 @@ findings as written, both found while fixing them:
 
 | # | Finding | Status |
 |---|---|---|
-| 1 | Passwordless sudo | Addressed as an **opt-in mode** (`--strict-sudo`), not a removal — see below |
+| 1 | Passwordless sudo | Fixed. Strict (no general sudo) is the default since 2026-09-18; `--allow-sudo` opts a sandbox in, `agent-sandbox sudo <c> on` grants it to a running one until restart. First landed 2026-08-13 as opt-in `--strict-sudo` — see below |
 | 2 | DNS unrestricted | Fixed. DNS pinned to the resolvers in `/etc/resolv.conf` |
 | 3 | Startup race | Fixed. `/tmp/sandbox-firewall-ready` handshake; launchers block on it |
 | 4 | Fails open | Fixed. Firewall failure is fatal unless `SANDBOX_SKIP_FIREWALL=1` |

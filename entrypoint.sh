@@ -10,7 +10,7 @@ export SSH_AUTH_SOCK=""
 
 # --- Privileged boot: sudo policy, host-visible ports, egress firewall ---
 # All of it happens in sandbox-privileged-boot.sh, the one thing the agent may
-# run as root. It reads its config (SANDBOX_STRICT_SUDO, SANDBOX_SKIP_FIREWALL,
+# run as root. It reads its config (SANDBOX_ALLOW_SUDO, SANDBOX_SKIP_FIREWALL,
 # DHIS2_BROKER_URL, ADB_SERVER_SOCKET, SANDBOX_HOST_PORT*) from /proc/1/environ
 # rather than from this shell, so those values cannot be forged from inside the
 # container — see the comment block in that script for why that matters.
@@ -22,8 +22,8 @@ export SSH_AUTH_SOCK=""
 # entrypoint's ordering entirely, so without it a session can attach while
 # egress is still unrestricted — a window that recurs on every `docker start`,
 # not just on first creation. It is written only after privileged boot has
-# finished, which in a --strict-sudo sandbox is also the point where the agent's
-# general root has already been taken away. Clearing it here matters: a
+# finished, which in a strict sandbox (the default) is also the point where any
+# general root the agent had has been taken away. Clearing it here matters: a
 # restarted container would otherwise reuse a stale marker and the wait would be
 # a no-op.
 FIREWALL_READY=/tmp/sandbox-firewall-ready
@@ -41,9 +41,9 @@ if sudo -n /usr/local/bin/sandbox-privileged-boot.sh; then
         # It also re-checks the rules themselves and re-applies the full policy
         # if they have been flushed or weakened, so a sandbox that lost its
         # firewall is re-fenced within one interval instead of staying open
-        # until it is next recreated. That is a backstop, not a boundary: with
-        # general sudo an agent can flush it again straight away. Use
-        # --strict-sudo if you need it to be a boundary.
+        # until it is next recreated. That is a backstop, not a boundary: in an
+        # --allow-sudo sandbox an agent can flush it again straight away. The
+        # default strict mode is what makes it a boundary.
         REFRESH_INTERVAL="${SANDBOX_FIREWALL_REFRESH_INTERVAL:-300}"
         (
             while true; do
@@ -214,16 +214,16 @@ EOF
 cat >> "$claude_md" <<'EOF'
 ### Permissions
 
-You run as the `agent` user, and sudo comes in two modes set per sandbox at creation — so **check rather than assume**:
+You run as the `agent` user. By default you have **no general sudo**. The user can opt a sandbox in when creating it (`--allow-sudo`), or grant sudo to a running sandbox until its next restart — so **check rather than assume**:
 
 ```bash
 sudo -n true && echo "passwordless sudo" || echo "strict sudo"
 ```
 
-`/etc/sandbox-info` records the same thing as `SANDBOX_STRICT_SUDO`, along with this sandbox's host-visible ports.
+`/etc/sandbox-info` records the same thing as `SANDBOX_ALLOW_SUDO=0|1`, along with this sandbox's host-visible ports.
 
-- **Passwordless sudo**: system changes inside the container work. Sudo doesn't reach the user's host. Note it also reaches the egress firewall — don't reconfigure or flush it to work around a blocked host; ask the user to allowlist what you need.
-- **Strict sudo** (`--strict-sudo`): you have no general root, so `sudo apt-get install …`, `sudo iptables …` and similar fail, and there is no way around it from inside. That is deliberate: it is what stops the egress firewall from being removable. Whatever you need should already be in the image — if something is genuinely missing, say so and ask the user to install it from the host (`docker exec -u root <container> …`) or add it to the image. Don't spend turns hunting for a privilege-escalation route.
+- **Strict sudo** (the default): `sudo apt-get install …`, `sudo iptables …` and similar fail, and there is no way around it from inside. That is deliberate: it is what stops the egress firewall from being removable. Whatever you need should already be in the image. If something is genuinely missing, say so and ask the user — from the host they can grant sudo until the next restart (`agent-sandbox sudo <container> on`), install it themselves (`docker exec -u root <container> …`), or add it to the image. Don't spend turns hunting for a privilege-escalation route.
+- **Passwordless sudo** (`--allow-sudo`, or granted temporarily): system changes inside the container work. Sudo doesn't reach the user's host. Note it also reaches the egress firewall — don't reconfigure or flush it to work around a blocked host; ask the user to allowlist what you need. A temporary grant ends when the sandbox restarts.
 
 Resource limits: 8 GB RAM, 4 CPUs.
 EOF

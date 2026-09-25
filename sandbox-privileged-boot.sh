@@ -50,7 +50,7 @@ pid1_env() {
     tr '\0' '\n' < /proc/1/environ | sed -n "s/^${name}=//p" | head -n 1
 }
 
-STRICT_SUDO="$(pid1_env SANDBOX_STRICT_SUDO)"
+ALLOW_SUDO="$(pid1_env SANDBOX_ALLOW_SUDO)"
 SKIP_FIREWALL="$(pid1_env SANDBOX_SKIP_FIREWALL)"
 BROKER_URL="$(pid1_env DHIS2_BROKER_URL)"
 ADB_SOCKET="$(pid1_env ADB_SERVER_SOCKET)"
@@ -71,16 +71,20 @@ fi
 
 # 1. Sudo policy. Deliberately first: it is cheap and security-critical, so a
 #    later firewall failure can never leave a strict sandbox with root intact.
-if [[ "$STRICT_SUDO" == "1" ]]; then
-    rm -f "$SUDOERS_BLANKET"
-    log "strict sudo — the agent has no general root in this sandbox."
-else
-    # Re-assert rather than assume. The container filesystem persists across
-    # stop/start, so a sandbox that booted strict once would otherwise stay
-    # sudo-less forever; writing the file back makes the mode a per-boot
-    # decision instead of a one-way ratchet.
+#    Strict is the default; only SANDBOX_ALLOW_SUDO=1 in PID 1's environment
+#    (set by the launcher's --allow-sudo) grants the agent general root. Either
+#    way the file is written or removed rather than assumed: the container
+#    filesystem persists across stop/start, and the host may have granted sudo
+#    temporarily (`agent-sandbox sudo <c> on`) since the last boot. Re-applying
+#    the created mode here is what makes that grant expire on restart.
+if [[ "$ALLOW_SUDO" == "1" ]]; then
     echo "$AGENT_USER ALL=(ALL) NOPASSWD:ALL" > "$SUDOERS_BLANKET"
     chmod 0440 "$SUDOERS_BLANKET"
+    log "passwordless sudo — the agent has general root in this sandbox (--allow-sudo)."
+else
+    ALLOW_SUDO=0
+    rm -f "$SUDOERS_BLANKET"
+    log "strict sudo — the agent has no general root in this sandbox."
 fi
 
 # 2. Record this sandbox's own facts for tools — and agents — that need them.
@@ -89,7 +93,7 @@ fi
 # values. This file is container-local and therefore the authoritative answer
 # to "what is true of THIS sandbox".
 {
-    echo "SANDBOX_STRICT_SUDO=${STRICT_SUDO:-0}"
+    echo "SANDBOX_ALLOW_SUDO=$ALLOW_SUDO"
     [[ -n "$HOST_PORT" ]] && echo "SANDBOX_HOST_PORT=$HOST_PORT"
     [[ -n "$HOST_PORT_2" ]] && echo "SANDBOX_HOST_PORT_2=$HOST_PORT_2"
 } > /etc/sandbox-info

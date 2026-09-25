@@ -14,7 +14,7 @@ This repo currently uses the **Docker setup at the root** as the active path. A 
 - Pre-installed Playwright + chromium with all Ubuntu 24.04 system deps
 - Optional language extensions: Go, Java, Rust
 - Multiple AI providers: Anthropic, OpenAI, Mistral, GitHub
-- Non-root `agent` user with passwordless sudo, or `--strict-sudo` for a sandbox where the agent cannot remove its own firewall
+- Non-root `agent` user with no general sudo by default, so the agent cannot remove its own firewall; `--allow-sudo` opts a sandbox in, and `agent-sandbox sudo <container> on` grants it to a running one until restart
 - Named Docker volumes for persistent, isolated agent config
 - Bidirectional skill sync between host and container (`sync-skills`) — pushes only *symlinked* skills (those the ai-skills manager has enabled); marketplace plugins like superpowers are installed natively in the container instead (see "Claude plugins")
 - HTTPS-only git access (SSH disabled for security)
@@ -64,6 +64,7 @@ Commands:
   shell [container]         Open an interactive shell in a running sandbox
   stop [container]          Stop a running sandbox (preserves container)
   remove <container>        Remove a sandbox container (preserves volumes)
+  sudo <container> [on|off] Grant/revoke the agent's sudo until the next restart
   list                      List all sandboxes
   build                     Build (or rebuild) the sandbox image, dropping the
                             image it replaces when nothing still uses it
@@ -78,36 +79,45 @@ Options (for `start`):
   --network <name>          Attach to a Docker network (repeatable)
   -p, --port HOST:CONT      Publish an additional port (repeatable)
   --host-network            Opt out of bridge+firewall (legacy mode)
-  --strict-sudo             No general root for the agent (see "Sudo modes")
-  --no-strict-sudo          Keep general sudo (default)
+  --allow-sudo              General passwordless sudo for the agent (see "Sudo modes")
   --no-config               Skip mounting agent config volumes
 ```
 
 ## Sudo modes
 
-By default the agent has passwordless `sudo` inside the container. That is convenient — runtime `apt-get`, system tweaks — but it also means the agent can remove the egress firewall that is meant to contain it:
+By default the agent has **no general `sudo`** inside the container. Passwordless sudo would be convenient — runtime `apt-get`, system tweaks — but it also lets the agent remove the egress firewall that is meant to contain it:
 
 ```bash
 sudo iptables -P OUTPUT ACCEPT && sudo iptables -F OUTPUT   # unrestricted internet
 sudo ipset add allowed-domains <ip>                         # allowlist any host
 ```
 
-`--strict-sudo` takes that away per sandbox:
+`--allow-sudo` opts a sandbox in at creation:
 
 ```bash
-agent-sandbox start ~/Repos/my-app --strict-sudo
+agent-sandbox start ~/Repos/my-app --allow-sudo
 ```
 
-Set `SANDBOX_STRICT_SUDO=1` in `.env` to make it the default for every sandbox — including the ones `sbx` creates, since `sbx` goes through `agent-sandbox start` — and use `--no-strict-sudo` for a one-off exception.
+Set `SANDBOX_ALLOW_SUDO=1` in your shell environment or `.env` to make that the default for every sandbox — including the ones `sbx` creates, since `sbx` goes through `agent-sandbox start`.
 
-| | Default | `--strict-sudo` |
+For a one-off need in a strict sandbox, grant sudo to the running container from the host instead of recreating it:
+
+```bash
+agent-sandbox sudo my-sandbox on     # agent has sudo from now on
+agent-sandbox sudo my-sandbox off    # take it back
+agent-sandbox sudo my-sandbox        # show current state and the mode it was created with
+```
+
+The grant is temporary by design: the next `stop`/`start` re-applies the mode the sandbox was created with, so strict stays the resting state and there is no second source of truth for the setting. If you keep granting the same sandbox sudo to install the same package, that package belongs in the image.
+
+| | Default (strict) | `--allow-sudo` |
 |---|---|---|
-| `sudo` for the agent | passwordless, unrestricted | denied |
-| Firewall removable by the agent | yes | no |
-| Runtime `apt-get` | works | **not available** |
-| Runtime `npm install -g` | works | works (agent-writable prefix) |
+| `sudo` for the agent | denied | passwordless, unrestricted |
+| Firewall removable by the agent | no | yes |
+| Runtime `apt-get` | **not available** (grant temporarily, or install from the host) | works |
+| Runtime `npm install -g` | works (agent-writable prefix) | works |
 
-**The tradeoff is runtime package installs.** A curated sudo allowlist is not a middle ground: `apt-get install` runs maintainer scripts as root, so any package-manager entry is equivalent to full root. In a strict sandbox anything the agent needs has to be in the image already, added via `agent-sandbox extend`, or installed from the host:
+**The tradeoff is runtime package installs.** A curated sudo allowlist is not a middle ground: `apt-get install` runs maintainer scripts as root, so any package-manager entry is equivalent to full root. In a strict sandbox anything the agent needs has to be in the image already, added via `agent-sandbox extend`, granted for the session with `agent-sandbox sudo <container> on`, or installed from the host:
 
 ```bash
 docker exec -u root <container> apt-get update && apt-get install -y <pkg>
@@ -115,7 +125,7 @@ docker exec -u root <container> apt-get update && apt-get install -y <pkg>
 
 That path goes through the same egress firewall, which is why the Ubuntu/Debian mirrors stay on the allowlist in `init-firewall.sh`.
 
-The agent is told which mode it is in: the in-container brief has a different Permissions section for each, so a strict sandbox's agent doesn't waste turns on `sudo apt-get` and misread the failures.
+The agent is told how to find out which mode it is in: the in-container brief describes both and gives the one-line test (`sudo -n true`), and `/etc/sandbox-info` records `SANDBOX_ALLOW_SUDO=0|1` for this container. `agent-sandbox sudo` updates that file too, so a strict sandbox's agent doesn't waste turns on `sudo apt-get` and misread the failures.
 
 ### How it works
 
@@ -124,9 +134,9 @@ Privileged boot happens in `sandbox-privileged-boot.sh`, the single command the 
 - Passing the broker/adb host:port config through `sudo env VAR=… init-firewall.sh` would require authorising `env`, which is equivalent to full root.
 - Passing it as arguments would be worse: the agent can run the wrapper whenever it likes, so `--broker-url=http://attacker:80` would let it punch its own hole in the firewall.
 
-So the wrapper reads its config from `/proc/1/environ`. PID 1's environment is fixed by `docker run` at container creation and cannot be altered from inside, which is what makes it trustworthy. Reading another user's environ is a ptrace-mode access, so the container is given `SYS_PTRACE`; that grants the agent nothing, since capabilities belong to processes and the agent is either not root (strict) or already root (default).
+So the wrapper reads its config from `/proc/1/environ`. PID 1's environment is fixed by `docker run` at container creation and cannot be altered from inside, which is what makes it trustworthy. Reading another user's environ is a ptrace-mode access, so the container is given `SYS_PTRACE`; that grants the agent nothing, since capabilities belong to processes and the agent is either not root (strict, the default) or already root (`--allow-sudo`).
 
-The mode is re-applied on every boot rather than being a one-way change to the container. That matters: the container filesystem persists across `stop`/`start`, so a sandbox that dropped sudo once and never restored the sudoers entry would fail its next firewall init — and with the firewall failing closed, would never boot again.
+The mode is re-applied on every boot rather than being a one-way change to the container. That matters twice over: the container filesystem persists across `stop`/`start`, so a sandbox that dropped sudo once and never restored the sudoers entry would fail its next firewall init — and with the firewall failing closed, would never boot again. And it is what makes `agent-sandbox sudo <container> on` safe to offer: the grant is a host-side root exec that writes the sudoers file, and the next boot removes it again. The image itself ships no general sudoers entry.
 
 ## Everyday use: `sbx`
 
@@ -380,7 +390,7 @@ The prune is deliberately scoped to this image — it never runs `docker image p
 
 ## Security
 
-- Containers run as non-root `agent` user with passwordless sudo
+- Containers run as non-root `agent` user with no general sudo unless opted in
 - Agent config in named Docker volumes, isolated from host filesystem
 - Host skills copied via `sync-skills`, not mounted
 - SSH disabled (no `openssh-client`, `SSH_AUTH_SOCK` cleared)
@@ -389,7 +399,7 @@ The prune is deliberately scoped to this image — it never runs `docker image p
 - API keys injected at runtime, never baked into images
 - **Egress firewall on by default**: outbound traffic restricted to an explicit allowlist (Anthropic, GitHub, npm, pypi, dhis2.org, dev CDNs). Adapted from [Anthropic's reference dev container](https://github.com/anthropics/claude-code/blob/main/.devcontainer/init-firewall.sh) with extensions for our domain list and Docker-network handling. Verified at every container start, **fails closed** if init fails, DNS is pinned to the container's own resolver, and the launchers refuse to attach until egress is actually filtered. Bypass with `--host-network` if needed.
 - **Self-healing firewall**: the background refresh loop re-checks the rules, not just the allowlist, and re-applies the full policy if they have been flushed or weakened — so a sandbox that lost its firewall is re-fenced within one interval (default 300 s) instead of staying open until it is next recreated. The repair reuses the allowlist it already resolved, because re-resolving needs exactly the working egress that is broken at that moment.
-- **Optional strict sudo** (`--strict-sudo`, or `SANDBOX_STRICT_SUDO=1` in `.env`): removes the agent's general root so the firewall cannot be removed from inside. Off by default; costs runtime `apt-get`. See "Sudo modes" above. In the default mode the firewall stops accidental and injected egress, not an agent that deliberately sets out to defeat it — the self-healing loop makes that tamper-evident rather than tamper-proof.
+- **Strict sudo by default**: the agent has no general root, so the firewall cannot be removed from inside. Costs runtime `apt-get`; `--allow-sudo` (or `SANDBOX_ALLOW_SUDO=1`) opts a sandbox in, and `agent-sandbox sudo <container> on` grants it to a running one until restart. See "Sudo modes" above. With sudo allowed the firewall stops accidental and injected egress, not an agent that deliberately sets out to defeat it — the self-healing loop makes that tamper-evident rather than tamper-proof.
 
 ### Read-only base image
 

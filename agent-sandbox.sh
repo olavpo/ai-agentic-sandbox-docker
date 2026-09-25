@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}")")" && pwd)"
 IMAGE_NAME="agentic-sandbox:latest"
 VOLUME_PREFIX="agentic-sandbox"
+AGENT_USER="agent"   # matches USERNAME in the Dockerfile
 
 # Load .env file if present (won't override existing env vars)
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
@@ -21,6 +22,10 @@ Commands:
   shell [container]      Open a shell in a running sandbox (default: agentic-sandbox)
   stop  [container]      Stop a running sandbox
   remove <container>     Remove a sandbox container (volumes preserved)
+  sudo <container> [on|off]
+                         Grant or revoke the agent's general sudo in a running
+                         sandbox until its next restart. No argument: show the
+                         current state.
   reset-config           Wipe all agent config volumes (auth, settings, skills)
   list                   List running sandboxes
   build                  Rebuild the sandbox image
@@ -42,12 +47,13 @@ Options for `start`:
                          SANDBOX_HOST_PORT_2.
   --host-network         Opt out of bridge networking and firewall. Use --network=host
                          and skip iptables. SANDBOX_HOST_PORT is not set.
-  --strict-sudo          Take away the agent's general passwordless sudo, so it
-                         cannot flush the egress firewall. No runtime apt-get:
-                         whatever the agent needs must be in the image, or be
-                         installed from the host with docker exec -u root.
-  --no-strict-sudo       Keep general sudo (the default). Use to override a
-                         SANDBOX_STRICT_SUDO=1 default set in .env.
+  --allow-sudo           Give the agent general passwordless sudo. Off by
+                         default: the agent has no root, so it cannot flush the
+                         egress firewall — and cannot apt-get. Set
+                         SANDBOX_ALLOW_SUDO=1 in your environment or .env to make
+                         it the default. For a one-off need in a strict sandbox,
+                         `agent-sandbox sudo <container> on` grants it until the
+                         next restart instead.
   --no-config            Don't mount agent config directories
   --no-dhis2-broker      Don't wire up the DHIS2 instance broker (d2-broker).
                          By default, if $DHIS2_BASE/_broker/tokens.json exists
@@ -196,11 +202,15 @@ cmd_start() {
     local use_dhis2_broker=true
     local use_adb=true
     local agent_choice="claude"
-    # Whether the agent gets general passwordless sudo in this sandbox. Defaults
-    # from SANDBOX_STRICT_SUDO, which is sourced from .env above — so setting it
-    # there flips the default for every sandbox, including the ones `sbx`
-    # creates, without any flag plumbing in `sbx` itself.
-    local strict_sudo="${SANDBOX_STRICT_SUDO:-0}"
+    # Whether the agent gets general passwordless sudo in this sandbox. Strict
+    # (no sudo) unless SANDBOX_ALLOW_SUDO=1 — from the environment or .env, which
+    # is sourced above — so setting it there flips the default for every
+    # sandbox, including the ones `sbx` creates, without any flag plumbing in
+    # `sbx` itself.
+    local allow_sudo="${SANDBOX_ALLOW_SUDO:-0}"
+    if [[ "${SANDBOX_STRICT_SUDO:-}" == "1" ]]; then
+        echo "Note: SANDBOX_STRICT_SUDO is ignored — strict is now the default. Use SANDBOX_ALLOW_SUDO=1 to opt in." >&2
+    fi
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -213,8 +223,11 @@ cmd_start() {
             --no-config) mount_config=false; shift ;;
             --no-dhis2-broker) use_dhis2_broker=false; shift ;;
             --no-adb) use_adb=false; shift ;;
-            --strict-sudo) strict_sudo=1; shift ;;
-            --no-strict-sudo) strict_sudo=0; shift ;;
+            --allow-sudo) allow_sudo=1; shift ;;
+            --strict-sudo|--no-strict-sudo)
+                echo "Error: $1 was removed — strict sudo is now the default." >&2
+                echo "  Use --allow-sudo to give the agent general sudo." >&2
+                exit 1 ;;
             --agent)
                 agent_choice="$2"
                 case "$agent_choice" in
@@ -251,12 +264,13 @@ cmd_start() {
 
     # If a container with this name already exists, resume it if stopped, or warn if running.
     # Resuming reuses the container as created: the sudo mode and the capabilities the
-    # wrapper needs are fixed by `docker run`, so --strict-sudo cannot be applied after
+    # wrapper needs are fixed by `docker run`, so --allow-sudo cannot be applied after
     # the fact. Say so rather than appearing to honour it.
     if docker ps -a --format '{{.Names}}' | grep -q "^${container_name}$"; then
-        if [[ "$strict_sudo" == "1" ]]; then
-            echo "Note: --strict-sudo only applies when a sandbox is created; '$container_name' already exists."
-            echo "  To switch it: agent-sandbox remove $container_name, then start again with --strict-sudo."
+        if [[ "$allow_sudo" == "1" ]]; then
+            echo "Note: --allow-sudo only applies when a sandbox is created; '$container_name' already exists."
+            echo "  For this session: agent-sandbox sudo $container_name on (lasts until restart)."
+            echo "  To switch it for good: agent-sandbox remove $container_name, then start again with --allow-sudo."
         fi
         if docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
             echo "Sandbox '$container_name' is already running."
@@ -412,9 +426,10 @@ cmd_start() {
 
     # Read by sandbox-privileged-boot.sh from /proc/1/environ at every boot, so
     # the mode is fixed for the life of the container but re-applied on each
-    # start rather than being a one-way change to its filesystem.
-    if [[ "$strict_sudo" == "1" ]]; then
-        env_args+=(-e "SANDBOX_STRICT_SUDO=1")
+    # start rather than being a one-way change to its filesystem. Absent means
+    # strict.
+    if [[ "$allow_sudo" == "1" ]]; then
+        env_args+=(-e "SANDBOX_ALLOW_SUDO=1")
     fi
 
     if $host_network; then
@@ -483,10 +498,10 @@ cmd_start() {
         echo "  Network: ${all_networks[*]:-bridge} (firewall on, egress allowlisted)"
         echo "  Host-visible ports: http://localhost:$sandbox_port (\$SANDBOX_HOST_PORT), http://localhost:$sandbox_port2 (\$SANDBOX_HOST_PORT_2)"
     fi
-    if [[ "$strict_sudo" == "1" ]]; then
-        echo "  Sudo: strict (no general root for the agent; no runtime apt-get)"
+    if [[ "$allow_sudo" == "1" ]]; then
+        echo "  Sudo: passwordless (--allow-sudo; agent can also flush the firewall)"
     else
-        echo "  Sudo: passwordless (agent can also flush the firewall)"
+        echo "  Sudo: strict (no general root for the agent; grant for one session with: agent-sandbox sudo $container_name on)"
     fi
     [[ -n "$dhis2_broker_active" ]] && echo "  DHIS2 broker: $dhis2_broker_active (agent-scoped token)"
     [[ -n "$adb_active" ]] && echo "  Android adb: $adb_active"
@@ -624,6 +639,82 @@ cmd_remove() {
     echo "Removing '$container_name'..."
     docker rm -f "$container_name" &>/dev/null
     echo "Done. (Named volumes preserved — use 'reset-config' to wipe them.)"
+}
+
+# Flip the agent's general sudo in a RUNNING sandbox, from the host. The change
+# is deliberately temporary: sandbox-privileged-boot.sh re-applies the mode the
+# container was created with on every `docker start`, so a grant lasts until the
+# next restart and strict remains the resting state. Sticky would need a second
+# source of truth for a security setting, on a filesystem the agent can write.
+cmd_sudo() {
+    local container_name="${1:-}" action="${2:-}"
+    if [[ -z "$container_name" ]]; then
+        echo "Error: container name required"
+        echo "Usage: agent-sandbox sudo <container> [on|off]"
+        exit 1
+    fi
+    case "$action" in
+        ""|on|off) ;;
+        *) echo "Error: expected 'on' or 'off', got '$action'"; exit 1 ;;
+    esac
+    if ! docker ps -a --format '{{.Names}}' | grep -q "^${container_name}$"; then
+        echo "Error: container '$container_name' does not exist"
+        exit 1
+    fi
+    if ! docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
+        echo "Error: '$container_name' is not running. Start it first — a start re-applies"
+        echo "  the mode it was created with, so grant sudo after it is up."
+        exit 1
+    fi
+
+    # "Created as" comes from PID 1's environment, which is what the boot script
+    # re-applies on restart. Containers from before strict became the default
+    # run the old boot script (image content is fixed at creation), for which
+    # an absent variable meant passwordless — probe for that so the answer is
+    # about the container in front of us, not the current launcher.
+    local created="strict" env_dump
+    env_dump=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_name")
+    if grep -qx 'SANDBOX_ALLOW_SUDO=1' <<<"$env_dump"; then
+        created="passwordless (--allow-sudo)"
+    elif ! docker exec "$container_name" grep -q SANDBOX_ALLOW_SUDO \
+            /usr/local/bin/sandbox-privileged-boot.sh 2>/dev/null \
+         && ! grep -qx 'SANDBOX_STRICT_SUDO=1' <<<"$env_dump"; then
+        created="passwordless (pre-dates the strict default; recreate to get strict)"
+    fi
+    local sudoers="/etc/sudoers.d/$AGENT_USER"
+    local current="strict"
+    if docker exec -u root "$container_name" test -f "$sudoers"; then
+        current="passwordless"
+    fi
+
+    if [[ -z "$action" ]]; then
+        echo "Sudo in '$container_name': $current now; created as $created."
+        return
+    fi
+
+    # Runs as root inside the container. The value and paths are passed as
+    # positional arguments rather than interpolated into the script, and
+    # /etc/sandbox-info is rewritten so the agent's own check stays truthful.
+    docker exec -u root "$container_name" sh -c '
+        user="$1"; sudoers="$2"; allow="$3"; info=/etc/sandbox-info
+        if [ "$allow" = 1 ]; then
+            echo "$user ALL=(ALL) NOPASSWD:ALL" > "$sudoers" && chmod 0440 "$sudoers"
+        else
+            rm -f "$sudoers"
+        fi
+        { [ -f "$info" ] && grep -v "^SANDBOX_ALLOW_SUDO=" "$info"; echo "SANDBOX_ALLOW_SUDO=$allow"; } > "$info.tmp" \
+            && mv "$info.tmp" "$info" && chmod 0644 "$info"
+    ' _ "$AGENT_USER" "$sudoers" "$([[ "$action" == on ]] && echo 1 || echo 0)"
+
+    if [[ "$action" == "on" ]]; then
+        echo "Sudo granted in '$container_name' until its next restart (created as $created)."
+        echo "  The agent can now also flush the egress firewall. Revoke with: agent-sandbox sudo $container_name off"
+    else
+        echo "Sudo revoked in '$container_name' (created as $created)."
+        if [[ "$created" != strict ]]; then
+            echo "  It comes back on the next restart; recreate without --allow-sudo to make strict permanent."
+        fi
+    fi
 }
 
 cmd_reset_config() {
@@ -875,6 +966,7 @@ case "${1:-}" in
     shell)       shift; cmd_shell "$@" ;;
     stop)        shift; cmd_stop "$@" ;;
     remove|rm)   shift; cmd_remove "$@" ;;
+    sudo)        shift; cmd_sudo "$@" ;;
     reset-config) shift; cmd_reset_config "$@" ;;
     list)        shift; cmd_list "$@" ;;
     build)       shift; cmd_build "$@" ;;
