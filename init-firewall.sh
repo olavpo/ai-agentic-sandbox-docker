@@ -92,6 +92,18 @@ DOMAINS=(
     "scanner.sonarcloud.io"
     "binaries.sonarsource.com"
 
+    # Android / Gradle builds. plugins.gradle.org answers some requests
+    # itself and 303-redirects others to repo.maven.apache.org. The Gradle
+    # wrapper (services.gradle.org) redirects to GitHub release assets,
+    # which the GitHub ranges below already cover.
+    "repo1.maven.org"
+    "repo.maven.apache.org"
+    "dl.google.com"
+    "maven.google.com"
+    "services.gradle.org"
+    "plugins.gradle.org"
+    "plugins-artifacts.gradle.org"
+
     # DuckDB extension repositories
     "extensions.duckdb.org"
     "community-extensions.duckdb.org"

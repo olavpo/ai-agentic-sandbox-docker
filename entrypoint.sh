@@ -124,7 +124,7 @@ You're running inside the **agentic-sandbox** Docker container, not directly on 
 
 ### Network is restricted
 
-Outbound traffic is filtered by an iptables egress firewall. Allowed by default: Anthropic, GitHub, npm/yarn registry, pypi, dhis2.org, plus a small set of dev CDNs (Playwright, VS Code marketplace, NodeSource, Debian). Anything else is dropped — `curl https://example.com` will fail. If you need a new host, ask the user to add it to `init-firewall.sh` and rebuild.
+Outbound traffic is filtered by an iptables egress firewall. Allowed by default: Anthropic, GitHub, npm/yarn registry, pypi, Maven Central, Google Maven and the Gradle distribution and plugin hosts (Android/Gradle builds), dhis2.org, plus a small set of dev CDNs (Playwright, VS Code marketplace, NodeSource, Debian/Ubuntu mirrors). Anything else is dropped — `curl https://example.com` will fail. If you need a new host, ask the user to add it to `init-firewall.sh`. The script is baked into the image, so a rebuild alone does not reach a running sandbox: the user has to recreate it, or copy the new script into it with `docker cp`.
 
 You're on the **`dev-net`** Docker network by default. Sibling dev containers (e.g. a DHIS2 instance named `dhis2`, a database named `dhis2-db`, an MCP server wrapped as a container) are reachable by container name: `curl http://dhis2:8080/api/me`. Use `ip route` to see what subnets are attached.
 
