@@ -24,8 +24,8 @@ npm install -g @anthropic-ai/sandbox-runtime
 brew install jq          # macOS — or: apt-get install jq
 
 # Clone this repo and symlink agent-sandbox into your PATH
-git clone <this-repo> ~/Repos/ai-agentic-sandbox
-ln -s ~/Repos/ai-agentic-sandbox/agent-sandbox.sh /usr/local/bin/agent-sandbox
+git clone <this-repo> ~/Repos/AI/ai-sandbox-docker
+ln -s ~/Repos/AI/ai-sandbox-docker/agent-sandbox.sh /usr/local/bin/agent-sandbox
 
 # Check the setup
 agent-sandbox doctor
@@ -104,7 +104,7 @@ The default explicitly **denies reads on `~/`** and re-allows only:
 - `~/.claude`, `~/.claude.json` — Claude's own config
 - `~/.cache` — package manager caches
 - `~/Downloads`, `~/Desktop` — convenience
-- `~/Repos/ai-skills` — symlink targets for skills
+- `~/Repos/AI/ai-skills` — symlink targets for skills
 
 This rule blocks **everything else** in your home directory without enumerating it: credentials (`~/.aws`, `~/.ssh`, `~/.docker`, `~/.kube`, `~/.gnupg`, `~/.config/gh`, `~/.npm`, etc.), shell/REPL histories (`~/.zsh_history`, `~/.python_history`, ...), VPN configs (`~/.cisco`, `~/.vmware`, ...), personal content (`~/Documents`, `~/Music`, `~/Pictures`, ...), cloud storage (iCloud Drive, Google Drive, OneDrive), and all of `~/Library`.
 
@@ -211,7 +211,7 @@ For stronger isolation (kernel-level + multi-agent + resource limits) the Docker
 - **`srt: command not found`** — `npm install -g @anthropic-ai/sandbox-runtime`
 - **`jq: command not found`** — `brew install jq` (macOS) or `apt-get install jq` (Linux)
 - **Claude says "login required" every time** — make sure `~/.claude` is writable (it is by default) and that you ran `claude login` once
-- **A skill fails with "permission denied" reading files** — the skill probably symlinks into a directory outside `~/Repos/ai-skills`. Add the target path to `allowRead` in your settings.
+- **A skill fails with "permission denied" reading files** — the skill probably symlinks into a directory outside `~/Repos/AI/ai-skills`. Add the target path to `allowRead` in your settings.
 - **Build hangs trying to reach an external host** — that host isn't in `allowedDomains`. Add it to a project-local settings file or accept the prompt.
 - **What's the actual policy in effect?** — `agent-sandbox status` from inside the project.
 

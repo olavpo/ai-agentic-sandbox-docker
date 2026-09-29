@@ -14,7 +14,7 @@ Upstream: [anthropic-experimental/sandbox-runtime#76 — Feature Request: TTY pa
 
 ```bash
 cd /tmp
-srt --settings ~/Repos/ai-agentic-sandbox/sandbox-runtime/settings/default.json -- bash -c 'stty raw 2>&1; echo "exit=$?"; stty sane'
+srt --settings ~/Repos/AI/ai-sandbox-docker/sandbox-runtime/settings/default.json -- bash -c 'stty raw 2>&1; echo "exit=$?"; stty sane'
 ```
 
 Expected if still broken: `stty: TIOCGETD: Operation not permitted` and exit=1.

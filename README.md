@@ -50,8 +50,8 @@ gh auth login
 Symlinks in `/usr/local/bin` point into this directory:
 
 ```bash
-ln -sfn ~/Repos/ai-sandbox-docker/agent-sandbox.sh /usr/local/bin/agent-sandbox
-ln -sfn ~/Repos/ai-sandbox-docker/sbx /usr/local/bin/sbx
+ln -sfn ~/Repos/AI/ai-sandbox-docker/agent-sandbox.sh /usr/local/bin/agent-sandbox
+ln -sfn ~/Repos/AI/ai-sandbox-docker/sbx /usr/local/bin/sbx
 ```
 
 ## Usage
