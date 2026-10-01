@@ -57,6 +57,10 @@ services:
       - SANDBOX_HOST_PORT=${SANDBOX_HOST_PORT:-49234}
       - SSH_AUTH_SOCK=
 
+    # Docker's default /dev/shm is 64 MB; Chromium keeps its shared-memory
+    # buffers there and its renderer crashes ("Page crashed") when it fills.
+    shm_size: 1gb
+
     # Resource limits to prevent runaway agents
     deploy:
       resources:

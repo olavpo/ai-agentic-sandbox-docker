@@ -59,6 +59,7 @@ DOMAINS=(
     # Playwright (chromium download CDN, used on first install)
     "playwright.azureedge.net"
     "cdn.playwright.dev"
+    "playwright.download.prss.microsoft.com"
 
     # apt / Node binary distribution.
     # Base image is ubuntu:24.04: arm64 builds pull from ports.ubuntu.com,

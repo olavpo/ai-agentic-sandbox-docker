@@ -520,6 +520,7 @@ cmd_start() {
         "${port_args[@]+"${port_args[@]}"}" \
         --memory=8g \
         --cpus=4 \
+        --shm-size=1g \
         "${volumes[@]}" \
         ${env_args[@]+"${env_args[@]}"} \
         "${extra_envs[@]+"${extra_envs[@]}"}" \
@@ -961,17 +962,25 @@ _sync_pull() {
 }
 
 # Main dispatch
-case "${1:-}" in
-    start)       shift; cmd_start "$@" ;;
-    shell)       shift; cmd_shell "$@" ;;
-    stop)        shift; cmd_stop "$@" ;;
-    remove|rm)   shift; cmd_remove "$@" ;;
-    sudo)        shift; cmd_sudo "$@" ;;
-    reset-config) shift; cmd_reset_config "$@" ;;
-    list)        shift; cmd_list "$@" ;;
-    build)       shift; cmd_build "$@" ;;
-    extend)      shift; cmd_extend "$@" ;;
-    sync-skills) shift; cmd_sync_skills "$@" ;;
-    -h|--help|help|"") usage ;;
-    *) echo "Unknown command: $1"; usage; exit 1 ;;
-esac
+# Dispatch from a function, with `exit` on the same line as the call. Bash
+# reads a script as it runs it, so editing this file while a command runs from
+# it (e.g. a long `build`) would otherwise make bash resume at a stale offset
+# in the new text once the command returns.
+main() {
+    case "${1:-}" in
+        start)       shift; cmd_start "$@" ;;
+        shell)       shift; cmd_shell "$@" ;;
+        stop)        shift; cmd_stop "$@" ;;
+        remove|rm)   shift; cmd_remove "$@" ;;
+        sudo)        shift; cmd_sudo "$@" ;;
+        reset-config) shift; cmd_reset_config "$@" ;;
+        list)        shift; cmd_list "$@" ;;
+        build)       shift; cmd_build "$@" ;;
+        extend)      shift; cmd_extend "$@" ;;
+        sync-skills) shift; cmd_sync_skills "$@" ;;
+        -h|--help|help|"") usage ;;
+        *) echo "Unknown command: $1"; usage; exit 1 ;;
+    esac
+}
+
+main "$@"; exit

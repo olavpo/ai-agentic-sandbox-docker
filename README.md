@@ -8,10 +8,11 @@ This repo currently uses the **Docker setup at the root** as the active path. A 
 
 ## Features
 
-- Isolated Docker containers with resource limits (8 GB RAM, 4 CPUs)
+- Isolated Docker containers with resource limits (8 GB RAM, 4 CPUs, 1 GB `/dev/shm` for Chromium)
 - **Egress firewall** dropping outbound traffic to anything outside an allowlist (Anthropic, GitHub, npm, pypi, dhis2.org, dev CDNs)
 - Pre-installed runtimes: Python 3 (with `uv`), Node.js 22 LTS, npm/pnpm/yarn
-- Pre-installed Playwright + chromium with all Ubuntu 24.04 system deps
+- Pre-installed Playwright + chromium with all Ubuntu 24.04 system deps; the browsers directory is agent-writable so projects can add the revision their npm Playwright pins
+- Python libraries the DHIS2 skills' scripts import (`requests`, `httpx`, `python-dotenv`, `psycopg2-binary`, `lxml`, `defusedxml`), plus `ffmpeg`, a headless Java 17 runtime and `poppler-utils`
 - Optional language extensions: Go, Java, Rust
 - Multiple AI providers: Anthropic, OpenAI, Mistral, GitHub
 - Non-root `agent` user with no general sudo by default, so the agent cannot remove its own firewall; `--allow-sudo` opts a sandbox in, and `agent-sandbox sudo <container> on` grants it to a running one until restart

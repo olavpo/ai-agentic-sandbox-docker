@@ -41,7 +41,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends locales sudo \
 
 # Base system tools (includes iptables/ipset/aggregate for the egress firewall;
 # adb is the client for driving an Android emulator on the host — see
-# android-testing.md)
+# android-testing.md). ffmpeg and the JRE are for Android screen recordings and
+# Maestro; poppler-utils is what Claude Code's Read tool needs to open PDFs.
+# Strict sudo means agents can't apt-install any of these themselves.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     adb \
     aggregate \
@@ -51,6 +53,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     diffutils \
+    ffmpeg \
     dnsutils \
     fd-find \
     file \
@@ -70,6 +73,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     make \
     man-db \
     nano \
+    openjdk-17-jre-headless \
+    poppler-utils \
     postgresql-client \
     procps \
     ripgrep \
@@ -93,6 +98,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/python3 /usr/bin/python \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Python libraries the DHIS2 skills' bundled scripts import (dhis2-metadata,
+# dhis2-integrity, the docx validator). pip rather than apt to match what the
+# skills' requirements files name.
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+RUN pip install --no-cache-dir \
+    defusedxml \
+    httpx \
+    lxml \
+    psycopg2-binary \
+    python-dotenv \
+    requests
+
 # Node.js 22 LTS
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
@@ -101,15 +118,22 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 # Install common global npm tools
 RUN npm install -g typescript ts-node pnpm yarn
 
+# Project mounts can show up owned by another uid (root, or the host user)
+# mid-session, and git then refuses with "detected dubious ownership". The
+# container is single-user, so trusting every path costs nothing.
+RUN git config --system --add safe.directory '*'
+
 # Playwright + chromium with system deps.
 # `playwright install --with-deps` handles Ubuntu 24.04's renamed packages
 # (libcups2t64, etc.) that direct apt-get installs would miss.
-ENV PIP_BREAK_SYSTEM_PACKAGES=1
+# The browsers dir belongs to the agent user: the npm @playwright/test and
+# @playwright/cli in projects pin other Chromium revisions than this Python
+# package, and `npx playwright install chromium` has to be able to add them.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN pip install playwright \
     && mkdir -p /opt/playwright-browsers \
     && playwright install --with-deps chromium \
-    && chmod -R a+rX /opt/playwright-browsers \
+    && chown -R $USERNAME:$USERNAME /opt/playwright-browsers \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Environment
