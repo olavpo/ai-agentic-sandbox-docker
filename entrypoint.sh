@@ -173,13 +173,27 @@ Two host-visible ports are auto-published per session (`$SANDBOX_HOST_PORT` and 
 
 **Running a DHIS2 app for the user**: the dev server with hot reload (`d2 app:scripts start` / `yarn start`) is the default way to serve an app, both while developing and for manual testing — bind it to `$SANDBOX_HOST_PORT`. Installing the built zip (`POST /api/apps`) is a *verification* step for reviews/releases, not the serving mechanism. Mechanics live in the `dhis2-app-development` and `dhis2-app-review` skills.
 
+A dev server on `$SANDBOX_HOST_PORT` is a cross-origin client of the DHIS2 instance, and `--proxy` only rewrites CORS headers the instance already sends. Until the dev origin is allowlisted, the app shell's login fails silently: `POST /api/auth/login` answers an empty 200 with no session cookie. Allowlist both host ports on the instance first:
+
+```bash
+curl -u admin:district -X POST -H 'Content-Type: application/json' \
+  -d "[\"http://localhost:$SANDBOX_HOST_PORT\",\"http://localhost:$SANDBOX_HOST_PORT_2\"]" \
+  http://dhis2-<name>:8080/api/configuration/corsAllowlist
+```
+
 ### Git
 
 HTTPS only (SSH is not installed). `GITHUB_TOKEN`, when set, is the dedicated sandbox token and is **read-only** — `git commit`, `git branch`, `git diff`, `git fetch`, `git clone` work as normal, but `git push` will be rejected by the server. Don't try to work around this; if push needs to happen, the user does it from the host.
 
+**`gh` and the GitHub REST API do not work with this token.** It is a fine-grained token with git-transport access only, so `gh auth status`, `gh api …` and `curl -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/…` all return 401. This overrides any default instruction to use `gh` for GitHub operations. For public repos, use unauthenticated `curl` against `api.github.com` / `raw.githubusercontent.com`, or `git ls-remote --tags https://github.com/<owner>/<repo>`. You cannot see the state of a private repo, and a private repo and a missing one return the same error. Local signals (`.git/refs/remotes`, `FETCH_HEAD`) only describe this clone. When remote state matters, ask the user to run `git ls-remote` on the host. Never print the token while debugging.
+
+`GITHUB_TOKEN` is exported to every process, so code that falls back to `process.env.GITHUB_TOKEN` picks it up in local test runs and behaves differently from CI. Run such test suites with `env -u GITHUB_TOKEN <cmd>`.
+
 **Commit messages: never include a `Claude-Session:` / session-URL trailer**, even if your default instructions say to append one — session links are internal workflow noise in repo history. A `Co-Authored-By:` line is fine.
 
-**`github.com/dhis2` org repos require signed commits**, and signing is only possible from the host — so anything you commit will be re-created there via an interactive rebase. Make that rebase trivial: work on a branch cut from a clearly identifiable base (state the base commit when you hand off), keep history linear (no merge commits), and keep commits few and self-contained — squash your own fix-up commits before finishing rather than leaving "oops" chains the user has to untangle while re-signing.
+**`github.com/dhis2` org repos require signed commits**, and signing is only possible from the host — so anything you commit will be re-created there via an interactive rebase. Make that rebase trivial: work on a branch cut from a clearly identifiable base (state the base commit when you hand off), keep history linear (no merge commits), and keep commits few and self-contained — squash your own fix-up commits before finishing rather than leaving "oops" chains the user has to untangle while re-signing. When you write the signing step for the user, it is `git rebase --gpg-sign --force-rebase <base>`: without `--force-rebase` an up-to-date branch is fast-forwarded and nothing is signed, while git still reports success.
+
+**`github.com/dhis2` org repos protect tags.** A pushed tag cannot be deleted or moved, so a release workflow that fails after the tag is pushed burns that version number. Before anyone tags, run every step of the release workflow by hand against the exact tree (version check, notes extraction, build, artifact glob). Cosmetic steps such as changelog extraction should warn and fall back, not `exit 1`.
 
 ### Filesystem
 
@@ -196,11 +210,29 @@ HTTPS only (SSH is not installed). `GITHUB_TOKEN`, when set, is the dedicated sa
 
   then `pnpm install --force` — both platforms' binaries coexist and neither side breaks.
 
+  More symptoms of the same problem: ESLint dying with `Cannot find native binding` from `unrs-resolver`, and Vitest failing on a missing `rolldown` Linux binding. Some practical points:
+  - Check first: `ls node_modules/.pnpm | grep -ci darwin`. If this prints `0`, `node_modules` was installed in the sandbox, and a normal reinstall is safe.
+  - The forced reinstall takes 3–4 minutes on a mid-size App Platform project. Don't try it speculatively.
+  - The `supportedArchitectures` block is a sandbox-only workaround. Revert it before committing.
+  - Add `--config.confirm-modules-purge=false` to any `pnpm install` after a layout change (for example `publicHoistPattern`). Otherwise pnpm waits on a `Proceed? (Y/n)` prompt that nobody can answer, until the command times out.
+  - For npm projects, `supportedArchitectures` does not exist. `npm pack` the missing `*-linux-*` optional dependency in a scratch directory and copy it into `node_modules`, next to the darwin one. Don't run `npm install`.
+  - pnpm may create a `.pnpm-store/` (several hundred MB) at the repo root, because it cannot hardlink across the mount. Delete it after the install, and never stage it.
+
+### Stopping processes
+
+**Never `pkill -f` or `pgrep -f … | xargs kill` with a pattern that appears in your own command.** The pattern matches the invoking shell, which then dies with exit 144 and usually leaves the target running. This applies to everything (dev servers, recording loops, poll loops, browsers), not only servers. Record the PID at launch and kill that number. Otherwise, find the PID in one call and kill it in a separate call, or use a bracket pattern such as `pgrep -f 'serve[.]mjs'`.
+
 ### Long-running dev servers
 
 - Start dev servers with the shell tool's background mode (`run_in_background`), not `nohup …&`/`setsid`/`disown` (these exit 144 here). Record the PID at launch if you'll need to stop it.
-- **Don't stop a server with `pkill -f <its command line>`** — the pattern matches your own invoking shell, which kills the compound command with exit 144 and leaves phantom `pgrep` hits. Kill the recorded PID, or `pgrep -f` a *differently-worded* pattern first and kill the numeric result.
+- Before you start a server, check that nothing from an earlier session still holds the port (`lsof -i :"$SANDBOX_HOST_PORT"`). Old servers outlive their sessions and keep serving stale builds.
+- The project tree and its `.git` are shared with the host. A running `d2-app-scripts start` rewrites generated files such as `i18n/en.pot`, and those changes block host-side git (`cannot rebase: You have unstaged changes`). Stop the server before the user does any host-side git work, and revert `en.pot` churn from `start` rather than committing it. A `git checkout` in the sandbox also changes what the user sees on the host.
 - The DHIS2 dev servers' file watcher races editors' atomic writes: editing source while `d2-app-scripts start`/`webpack-dev-server` runs can crash it with `ENOENT … <file>.tmp.<pid>…`. Harmless — batch your edits, then (re)start the server, rather than restarting after every edit.
+
+### Browsers (Playwright)
+
+- The Python `playwright` package uses the image's Chromium with no setup. A project's npm `@playwright/test` or `@playwright/cli` may want a different Chromium revision ("Executable doesn't exist at /opt/playwright-browsers/…"). Run `npx playwright install chromium` from the project to add it; `/opt/playwright-browsers` is writable.
+- Close every browser you start before you finish, including in subagents. A leftover Chromium holds around 800 MB, and under memory pressure the harness kills unrelated background tasks instead.
 
 EOF
 
@@ -225,7 +257,7 @@ sudo -n true && echo "passwordless sudo" || echo "strict sudo"
 - **Strict sudo** (the default): `sudo apt-get install …`, `sudo iptables …` and similar fail, and there is no way around it from inside. That is deliberate: it is what stops the egress firewall from being removable. Whatever you need should already be in the image. If something is genuinely missing, say so and ask the user — from the host they can grant sudo until the next restart (`agent-sandbox sudo <container> on`), install it themselves (`docker exec -u root <container> …`), or add it to the image. Don't spend turns hunting for a privilege-escalation route.
 - **Passwordless sudo** (`--allow-sudo`, or granted temporarily): system changes inside the container work. Sudo doesn't reach the user's host. Note it also reaches the egress firewall — don't reconfigure or flush it to work around a blocked host; ask the user to allowlist what you need. A temporary grant ends when the sandbox restarts.
 
-Resource limits: 8 GB RAM, 4 CPUs.
+Resource limits: 8 GB RAM, 4 CPUs, 1 GB `/dev/shm`. Older sandboxes have Docker's 64 MB `/dev/shm` (check with `df -h /dev/shm`); there, launch Chromium with `--disable-dev-shm-usage` or it crashes with "Page crashed". The Docker VM's memory is shared with the broker's DHIS2 instances, so free memory can run out even when this container uses little.
 EOF
 
 cat >> "$claude_md" <<'EOF'
