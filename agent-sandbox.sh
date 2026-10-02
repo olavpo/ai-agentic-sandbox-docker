@@ -354,6 +354,12 @@ cmd_start() {
     [[ -n "${ANTHROPIC_API_KEY:-}" ]] && env_args+=(-e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
     [[ -n "${OPENAI_API_KEY:-}" ]]    && env_args+=(-e "OPENAI_API_KEY=$OPENAI_API_KEY")
     [[ -n "${MISTRAL_API_KEY:-}" ]]   && env_args+=(-e "MISTRAL_API_KEY=$MISTRAL_API_KEY")
+    # Git identity, so sandbox commits carry the user's name instead of the
+    # entrypoint's "Agent Sandbox" fallback.
+    local git_var
+    for git_var in GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL; do
+        [[ -n "${!git_var:-}" ]] && env_args+=(-e "$git_var=${!git_var}")
+    done
     # GitHub access: ONLY the dedicated read-only sandbox token. Never fall
     # back to the user's personal GITHUB_TOKEN — agents must not inherit
     # broader scopes than the sandbox token grants.
