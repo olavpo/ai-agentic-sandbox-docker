@@ -86,6 +86,9 @@ DOMAINS=(
     "play.im.dhis2.org"
     "implement.im.dhis2.org"
     "research.im.dhis2.org"
+    # DHIS2 WAR downloads and the version index (stable.json). Served from
+    # S3 behind CloudFront, no redirect to another host.
+    "releases.dhis2.org"
 
     # SonarCloud (web/API + scanner binary downloads)
     "sonarcloud.io"
