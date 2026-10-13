@@ -19,8 +19,9 @@ Usage: agent-sandbox <command> [options]
 
 Commands:
   start <project-dir>    Start a new sandbox with the given project mounted
-  shell [container]      Open a shell in a running sandbox (default: agentic-sandbox)
-  stop  [container]      Stop a running sandbox
+  shell [container]      Open a shell in a running sandbox (default: the only
+                         running one)
+  stop  [container]      Stop a running sandbox (default: the only running one)
   remove <container>     Remove a sandbox container (volumes preserved)
   sudo <container> [on|off]
                          Grant or revoke the agent's general sudo in a running
@@ -33,7 +34,9 @@ Commands:
   sync-skills [container] [push|pull]  Sync skills between host and container
 
 Options for `start`:
-  -n, --name NAME        Container name (default: agentic-sandbox)
+  -n, --name NAME        Container name (default: agentic-sandbox-<project dir name>).
+                         An existing container is resumed only if it mounts the
+                         same project directory.
   --agent NAME           Which agent to install/mount: claude (default), copilot,
                          vibe, or all. Only the chosen agent's config volume is
                          mounted; only that agent is installed at first start.
@@ -192,7 +195,7 @@ wait_for_firewall() {
 
 cmd_start() {
     local project_dir=""
-    local container_name="agentic-sandbox"
+    local container_name=""
     local extra_envs=()
     local mount_config=true
     local extra_networks=()
@@ -240,7 +243,7 @@ cmd_start() {
             *)
                 if [[ -z "$project_dir" ]]; then
                     project_dir="$1"
-                elif [[ "$container_name" == "agentic-sandbox" ]]; then
+                elif [[ -z "$container_name" ]]; then
                     container_name="$1"
                 fi
                 shift ;;
@@ -260,7 +263,31 @@ cmd_start() {
         exit 1
     fi
 
+    # Default the name from the project directory, so starting a second project
+    # never lands in the first project's container.
+    if [[ -z "$container_name" ]]; then
+        container_name="agentic-sandbox-$(basename "$project_dir" \
+            | LC_ALL=C tr '[:upper:]' '[:lower:]' \
+            | LC_ALL=C sed -E 's/[^a-z0-9_.-]+/-/g; s/-+/-/g; s/^[-.]+//; s/[-.]+$//')"
+        container_name="${container_name%-}"
+    fi
+
     ensure_image
+
+    # A container with this name may belong to another project (an explicit
+    # --name reused across projects, or a container from before names were
+    # derived from the project). Refuse rather than resume the wrong mount.
+    if docker ps -a --format '{{.Names}}' | grep -Fqx "$container_name"; then
+        local existing_dir
+        existing_dir=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_name" \
+            | sed -n 's/^PROJECT_DIR=//p')
+        if [[ -n "$existing_dir" && "$existing_dir" != "$project_dir" ]]; then
+            echo "Error: sandbox '$container_name' already exists for a different project:" >&2
+            echo "  $existing_dir" >&2
+            echo "  Use another name (-n NAME), or remove it: agent-sandbox remove $container_name" >&2
+            exit 1
+        fi
+    fi
 
     # If a container with this name already exists, resume it if stopped, or warn if running.
     # Resuming reuses the container as created: the sudo mode and the capabilities the
@@ -601,8 +628,29 @@ cmd_start() {
     echo "  agent-sandbox shell $container_name"
 }
 
+# With no name given, use the only running sandbox; with several, make the
+# caller pick one rather than guess.
+default_sandbox() {
+    local running
+    running=$(docker ps --filter "label=agentic-sandbox=true" --format '{{.Names}}')
+    if [[ $(printf '%s' "$running" | grep -c .) -eq 1 ]]; then
+        printf '%s' "$running"
+        return
+    fi
+    if [[ -z "$running" ]]; then
+        echo "Error: no sandbox is running" >&2
+    else
+        echo "Error: several sandboxes are running; name one:" >&2
+        printf '  %s\n' $running >&2
+    fi
+    exit 1
+}
+
 cmd_shell() {
-    local container_name="${1:-agentic-sandbox}"
+    local container_name="${1:-}"
+    if [[ -z "$container_name" ]]; then
+        container_name=$(default_sandbox) || exit 1
+    fi
     if ! docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
         echo "Error: container '$container_name' is not running"
         echo "Running containers:"
@@ -626,7 +674,10 @@ cmd_shell() {
 }
 
 cmd_stop() {
-    local container_name="${1:-agentic-sandbox}"
+    local container_name="${1:-}"
+    if [[ -z "$container_name" ]]; then
+        container_name=$(default_sandbox) || exit 1
+    fi
     echo "Stopping '$container_name'..."
     docker stop "$container_name" >/dev/null
     echo "Done. (Container preserved — use 'start' to resume, or 'remove' to delete.)"
