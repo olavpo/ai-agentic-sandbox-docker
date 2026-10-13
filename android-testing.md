@@ -62,8 +62,13 @@ export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
 ```bash
 avdmanager create avd -n dhis2-test \
   -k "system-images;android-34;google_apis;arm64-v8a" \
-  -d pixel_7
+  -d medium_phone
 ```
+
+The AVD mimics a budget phone common in DHIS2 countries (Tecno/Infinix/itel
+class): 720×1600 at 320 dpi, 2 cores. The screen and core count are set in
+the config step below. The emulator raises RAM to 2560 MB for this system
+image whatever `hw.ramSize` says.
 
 **Then fix the hardware config** — `avdmanager` writes an AVD with GPU
 rendering *disabled*, and software rendering makes Android 14 unusably slow
@@ -72,9 +77,13 @@ the hardware keyboard (more reliable `adb shell input text`):
 
 ```bash
 CFG=~/.android/avd/dhis2-test.avd/config.ini
-sed -i '' -e 's/^hw.gpu.enabled=no/hw.gpu.enabled=yes/' \
-          -e 's/^hw.gpu.mode=auto/hw.gpu.mode=host/' \
-          -e 's/^hw.keyboard=no/hw.keyboard=yes/' "$CFG"
+sed -i '' -e 's/^hw.gpu.enabled=.*/hw.gpu.enabled=yes/' \
+          -e 's/^hw.gpu.mode=.*/hw.gpu.mode=host/' \
+          -e 's/^hw.keyboard=.*/hw.keyboard=yes/' \
+          -e 's/^hw.lcd.width=.*/hw.lcd.width=720/' \
+          -e 's/^hw.lcd.height=.*/hw.lcd.height=1600/' \
+          -e 's/^hw.lcd.density=.*/hw.lcd.density=320/' \
+          -e 's/^hw.cpu.ncore=.*/hw.cpu.ncore=2/' "$CFG"
 ```
 
 One AVD is enough; agents reset app state with
