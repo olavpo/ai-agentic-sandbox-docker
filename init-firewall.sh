@@ -73,6 +73,11 @@ DOMAINS=(
     "archive.ubuntu.com"
     "security.ubuntu.com"
 
+    # Raspberry Pi OS: the apt archive (kernel, firmware, Pi tools) and the
+    # official OS images, for building Pi images in a chroot.
+    "archive.raspberrypi.com"
+    "downloads.raspberrypi.com"
+
     # VS Code marketplace (devcontainer use)
     "marketplace.visualstudio.com"
     "vscode.blob.core.windows.net"
