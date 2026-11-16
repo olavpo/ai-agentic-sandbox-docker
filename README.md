@@ -17,7 +17,7 @@ This repo currently uses the **Docker setup at the root** as the active path. A 
 - Multiple AI providers: Anthropic, OpenAI, Mistral, GitHub
 - Non-root `agent` user with no general sudo by default, so the agent cannot remove its own firewall; `--allow-sudo` opts a sandbox in, and `agent-sandbox sudo <container> on` grants it to a running one until restart
 - Named Docker volumes for persistent, isolated agent config
-- Bidirectional skill sync between host and container (`sync-skills`) — pushes only *symlinked* skills (those the ai-skills manager has enabled); marketplace plugins like superpowers are installed natively in the container instead (see "Claude plugins")
+- Bidirectional skill sync between host and container (`sync-skills`) — pushes only *symlinked* skills (skills you have enabled by symlinking them into `~/.claude/skills`); marketplace plugins like superpowers are installed natively in the container instead (see "Claude plugins")
 - HTTPS-only git access (SSH disabled for security)
 - The project's `.git/config` and `.git/hooks` mounted read-only, so an agent cannot plant code that git runs on the host
 - Pre-published host port (`SANDBOX_HOST_PORT`) for agent-started servers the user wants to open in their browser

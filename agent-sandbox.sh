@@ -386,7 +386,7 @@ cmd_start() {
     # project mount or /workspaces: project tooling that walks the tree (prettier,
     # eslint) must never find it. Only mounted when the host directory exists, so
     # a checkout without one is unaffected.
-    local lessons_dir="${SANDBOX_LESSONS_DIR:-$HOME/Repos/AI/ai-agent-lessons}"
+    local lessons_dir="${SANDBOX_LESSONS_DIR:-$HOME/Projects/ai-agent-lessons}"
     local lessons_active=""
     if [[ -d "$lessons_dir" ]]; then
         volumes+=(-v "$lessons_dir:/mnt/lessons")
@@ -982,10 +982,10 @@ cmd_sync_skills() {
     esac
 }
 
-# Only symlinked skills sync into sandboxes. The ai-skills manager
-# (~/Repos/AI/ai-skills/ai-skills-sync/manage.py) enables a skill by symlinking it into
-# ~/.claude/skills, so a symlink means "deliberately enabled" — that includes
-# direct symlinks to other repos (dhis2-instances, dhis2-android-testing).
+# Only symlinked skills sync into sandboxes. A skill is enabled by symlinking it
+# (e.g. from ~/Projects/Skills/<repo>/<skill>) into ~/.claude/skills, so a
+# symlink means "deliberately enabled" — that includes direct symlinks to
+# other repos (dhis2-instances, dhis2-android-testing).
 #
 # Real (non-symlink) directories are NOT synced. On the host these are
 # plugin-materialized skills (e.g. the superpowers set) or strays; sandboxes
