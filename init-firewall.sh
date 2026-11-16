@@ -78,11 +78,6 @@ DOMAINS=(
     "archive.raspberrypi.com"
     "downloads.raspberrypi.com"
 
-    # VS Code marketplace (devcontainer use)
-    "marketplace.visualstudio.com"
-    "vscode.blob.core.windows.net"
-    "update.code.visualstudio.com"
-
     # DHIS2
     "dhis2.org"
     "www.dhis2.org"

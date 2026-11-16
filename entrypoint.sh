@@ -124,7 +124,7 @@ You're running inside the **agentic-sandbox** Docker container, not directly on 
 
 ### Network is restricted
 
-Outbound traffic is filtered by an iptables egress firewall. Allowed by default: Anthropic, GitHub, npm/yarn registry, pypi, Maven Central, Google Maven and the Gradle distribution and plugin hosts (Android/Gradle builds), dhis2.org, plus a small set of dev CDNs (Playwright, VS Code marketplace, NodeSource, Debian/Ubuntu mirrors). Anything else is dropped — `curl https://example.com` will fail. If you need a new host, ask the user to add it to `init-firewall.sh`. The script is baked into the image, so a rebuild alone does not reach a running sandbox: the user has to recreate it, or copy the new script into it with `docker cp`.
+Outbound traffic is filtered by an iptables egress firewall. Allowed by default: Anthropic, GitHub, npm/yarn registry, pypi, Maven Central, Google Maven and the Gradle distribution and plugin hosts (Android/Gradle builds), dhis2.org, plus a small set of dev CDNs (Playwright, NodeSource, Debian/Ubuntu and Raspberry Pi OS mirrors, SonarCloud, DuckDB extensions). Anything else is dropped — `curl https://example.com` will fail. If you need a new host, ask the user to add it to `init-firewall.sh`. The script is baked into the image, so a rebuild alone does not reach a running sandbox: the user has to recreate it, or copy the new script into it with `docker cp`.
 
 You're on the **`dev-net`** Docker network by default. Sibling dev containers (e.g. a DHIS2 instance named `dhis2`, a database named `dhis2-db`, an MCP server wrapped as a container) are reachable by container name: `curl http://dhis2:8080/api/me`. Use `ip route` to see what subnets are attached.
 
@@ -189,6 +189,8 @@ HTTPS only (SSH is not installed). `GITHUB_TOKEN`, when set, is the dedicated sa
 
 `GITHUB_TOKEN` is exported to every process, so code that falls back to `process.env.GITHUB_TOKEN` picks it up in local test runs and behaves differently from CI. Run such test suites with `env -u GITHUB_TOKEN <cmd>`.
 
+**The project's `.git/config` and `.git/hooks` are read-only** (git on the host would execute what is in them, so the sandbox must not be able to write them). Commits, branches, fetch, pull and checkout work. Anything that writes `.git/config` fails with a lock or read-only error: `git remote add`, `git branch -u`, local `git config`, and creating a branch that tracks a remote one (use `git switch --no-track …`). Use `git -c key=value <cmd>` for one-off settings, and ask the user to change repo config on the host. Don't try to work around the read-only mount.
+
 **Commit messages: never include a `Claude-Session:` / session-URL trailer**, even if your default instructions say to append one — session links are internal workflow noise in repo history. A `Co-Authored-By:` line is fine.
 
 **`github.com/dhis2` org repos require signed commits**, and signing is only possible from the host — so anything you commit will be re-created there via an interactive rebase. Make that rebase trivial: work on a branch cut from a clearly identifiable base (state the base commit when you hand off), keep history linear (no merge commits), and keep commits few and self-contained — squash your own fix-up commits before finishing rather than leaving "oops" chains the user has to untangle while re-signing. When you write the signing step for the user, it is `git rebase --gpg-sign --force-rebase <base>`: without `--force-rebase` an up-to-date branch is fast-forwarded and nothing is signed, while git still reports success.
@@ -197,9 +199,9 @@ HTTPS only (SSH is not installed). `GITHUB_TOKEN`, when set, is the dedicated sa
 
 ### Filesystem
 
-- Your project is mounted at `/<project-name>` (whatever directory you start in).
+- Your project is mounted at the same absolute path it has on the user's host (`$PROJECT_DIR`, the directory you start in).
 - Skills live under `~/.claude/skills/`. If a skill is missing, ask the user to run `agent-sandbox sync-skills push` outside the container. **Edits you make to a skill *inside* the sandbox don't persist** — `~/.claude/skills/` is synced from the host. Apply skill changes host-side (the masters), or they're lost on the next sync.
-- You can write freely under `/<project-name>`, `/tmp`, and `~/`. The host filesystem outside the project mount is not accessible.
+- You can write freely under `$PROJECT_DIR`, `/tmp`, and `~/`. The host filesystem outside the project mount is not accessible.
 - **Host-mounted `node_modules` may carry the wrong platform's native binaries** (the host is often macOS/arm64; this sandbox is Linux). Symptom: `MODULE_NOT_FOUND: @rollup/rollup-linux-*`, or esbuild/swc/sharp failing to load. Do NOT plain-`pnpm install` (it would strip the host's darwin binaries and break the host instead). For pnpm projects, declare both platforms in `pnpm-workspace.yaml` and reinstall:
 
   ```yaml

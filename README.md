@@ -19,7 +19,7 @@ This repo currently uses the **Docker setup at the root** as the active path. A 
 - Named Docker volumes for persistent, isolated agent config
 - Bidirectional skill sync between host and container (`sync-skills`) — pushes only *symlinked* skills (those the ai-skills manager has enabled); marketplace plugins like superpowers are installed natively in the container instead (see "Claude plugins")
 - HTTPS-only git access (SSH disabled for security)
-- VS Code Dev Container support via `.devcontainer/devcontainer.json`
+- The project's `.git/config` and `.git/hooks` mounted read-only, so an agent cannot plant code that git runs on the host
 - Pre-published host port (`SANDBOX_HOST_PORT`) for agent-started servers the user wants to open in their browser
 - Joinable to user-defined Docker networks for reaching dev containers (DHIS2, etc.) by name
 - Optional DHIS2 instance broker integration: agents can create/reset/delete disposable `agent-*` DHIS2 test instances through a token-scoped HTTP API on the host (see "DHIS2 test instances")
@@ -27,7 +27,8 @@ This repo currently uses the **Docker setup at the root** as the active path. A 
 
 ## Requirements
 
-- Docker and Docker Compose
+- Docker with BuildKit (the Dockerfile uses `COPY --chmod`). Docker Desktop has it built in; with Colima or another Homebrew-installed CLI, install the plugin: `brew install docker-buildx`, and make sure `~/.docker/config.json` lists `"cliPluginsExtraDirs": ["/opt/homebrew/lib/docker/cli-plugins"]`
+- With Colima, keep projects under `$HOME` (the only directory Colima shares by default) and give the VM at least 4 CPUs and 8 GB, which is what each sandbox is limited to
 - API keys for the agents you want to use
 
 ## Quick Start
@@ -48,11 +49,13 @@ claude login
 gh auth login
 ```
 
-Symlinks in `/usr/local/bin` point into this directory:
+Put the two commands on your PATH with symlinks into this checkout. `~/.local/bin` needs no sudo; use `/usr/local/bin` instead if you prefer and it exists:
 
 ```bash
-ln -sfn ~/Repos/AI/ai-sandbox-docker/agent-sandbox.sh /usr/local/bin/agent-sandbox
-ln -sfn ~/Repos/AI/ai-sandbox-docker/sbx /usr/local/bin/sbx
+# from the root of this repo
+mkdir -p ~/.local/bin
+ln -sfn "$PWD/agent-sandbox.sh" ~/.local/bin/agent-sandbox
+ln -sfn "$PWD/sbx" ~/.local/bin/sbx
 ```
 
 ## Usage
@@ -82,6 +85,7 @@ Options (for `start`):
   --host-network            Opt out of bridge+firewall (legacy mode)
   --allow-sudo              General passwordless sudo for the agent (see "Sudo modes")
   --no-config               Skip mounting agent config volumes
+  --writable-git-meta       Don't mount .git/config and .git/hooks read-only (see "Security")
 ```
 
 ## Sudo modes
@@ -317,20 +321,6 @@ agent-sandbox sync-skills pull         # pull container skills back to host
 
 After starting a new sandbox, run `agent-sandbox sync-skills push` to populate it.
 
-## VS Code Dev Container
-
-Open this project in VS Code with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers):
-
-1. Open the folder in VS Code
-2. Click **Reopen in Container** when prompted
-
-The devcontainer config:
-- Installs the Claude Code VS Code extension
-- Enables `bypassPermissions` mode
-- Passes git identity from host env vars
-- Disables SSH agent forwarding
-- Uses named volumes for persistent config
-
 ## Language Extensions
 
 ```bash
@@ -380,7 +370,6 @@ The prune is deliberately scoped to this image — it never runs `docker image p
 ├── Dockerfile              # Main sandbox image (Ubuntu 24.04)
 ├── docker-compose.yml      # Compose with named volumes
 ├── entrypoint.sh           # Startup: installs agents, sets up git auth
-├── .devcontainer/          # VS Code Dev Container config
 ├── .env.example            # API key template
 ├── extensions/             # Optional language Dockerfiles
 ├── tests/                  # Unit tests for sbx naming helpers
@@ -392,7 +381,7 @@ The prune is deliberately scoped to this image — it never runs `docker image p
 ## Security
 
 - Containers run as non-root `agent` user with no general sudo unless opted in
-- Agent config in named Docker volumes, isolated from host filesystem
+- Agent config in named Docker volumes, isolated from host filesystem — but **shared between sandboxes** (see below)
 - Host skills copied via `sync-skills`, not mounted
 - SSH disabled (no `openssh-client`, `SSH_AUTH_SOCK` cleared)
 - All git via HTTPS using `GITHUB_TOKEN`
@@ -401,6 +390,16 @@ The prune is deliberately scoped to this image — it never runs `docker image p
 - **Egress firewall on by default**: outbound traffic restricted to an explicit allowlist (Anthropic, GitHub, npm, pypi, dhis2.org, dev CDNs). Adapted from [Anthropic's reference dev container](https://github.com/anthropics/claude-code/blob/main/.devcontainer/init-firewall.sh) with extensions for our domain list and Docker-network handling. Verified at every container start, **fails closed** if init fails, DNS is pinned to the container's own resolver, and the launchers refuse to attach until egress is actually filtered. Bypass with `--host-network` if needed.
 - **Self-healing firewall**: the background refresh loop re-checks the rules, not just the allowlist, and re-applies the full policy if they have been flushed or weakened — so a sandbox that lost its firewall is re-fenced within one interval (default 300 s) instead of staying open until it is next recreated. The repair reuses the allowlist it already resolved, because re-resolving needs exactly the working egress that is broken at that moment.
 - **Strict sudo by default**: the agent has no general root, so the firewall cannot be removed from inside. Costs runtime `apt-get`; `--allow-sudo` (or `SANDBOX_ALLOW_SUDO=1`) opts a sandbox in, and `agent-sandbox sudo <container> on` grants it to a running one until restart. See "Sudo modes" above. With sudo allowed the firewall stops accidental and injected egress, not an agent that deliberately sets out to defeat it — the self-healing loop makes that tamper-evident rather than tamper-proof.
+- **Git metadata is read-only**: the project is mounted read-write, and git on the host executes `.git/hooks/*` and acts on `.git/config` (`core.hooksPath`, `core.fsmonitor`, filter and diff drivers, aliases). An agent able to write either could run code on your machine the next time you use git in that project — for example during the signing rebase. `agent-sandbox start` therefore mounts both read-only over the project mount (creating `.git/hooks` on the host if it is missing). Commits, branches, fetch, pull and checkout still work; commands that write repo config (`git remote add`, `git branch -u`, local `git config`, creating a branch that tracks a remote one) fail in the sandbox and belong on the host. Opt out per sandbox with `--writable-git-meta`. Only applies to sandboxes created after this change, and only to the top-level repo (not submodules under `.git/modules`). Because a bind-mounted file pins its inode, a `git config` you run on the host reaches a running sandbox only after it restarts.
+
+### Known limits
+
+These are properties of the design rather than bugs; know them when deciding what to run in a sandbox.
+
+- **The project tree itself is still host-executable.** The git guard above covers what git runs implicitly. It cannot cover files you run on purpose: `package.json` scripts, `Makefile`, `.envrc` (direnv), `.vscode/tasks.json`, test suites, build scripts. Review agent changes to those before running them on the host.
+- **The allowlist is by IP address, not hostname.** `init-firewall.sh` resolves each allowed domain once (and every 300 s) and allows the resulting IPs. Several allowed hosts sit on shared infrastructure — CloudFront (`releases.dhis2.org`, `docs.dhis2.org`), Google (`dl.google.com`, `maven.google.com`), `sentry.io`, and GitHub's web, API and git ranges (which serve every repo, gist and account on `github.com`, so an agent holding any token can push data to a repo of its choosing). Anything else served from the same IPs is reachable too, so a determined agent can still reach attacker-controlled content or exfiltrate data through those providers. The firewall stops accidental and casual egress and makes injected-prompt exfiltration much harder; it is not an airtight data boundary. Closing that gap would need an HTTPS proxy that filters on SNI/hostname.
+- **DNS lookups are forwarded upstream.** DNS is pinned to the container's own resolver, but that resolver is recursive, so data can still leave encoded in lookups of an attacker's domain (see "Networking and host-visible ports").
+- **Config volumes are shared across sandboxes.** Every claude sandbox mounts the same `agentic-sandbox-claude` volume at `~/.claude` — that is what makes "log in once" work. It also means an agent in one project can change what agents in every other project run: `settings.json` (including hooks, which execute commands), `CLAUDE.md`, installed skills and plugins, and the stored OAuth credentials. A prompt injection picked up in one repo can therefore persist into the others. The entrypoint rewrites only its own marked block of `CLAUDE.md` on each boot; nothing resets the rest. If a sandbox may have been exposed to hostile content, inspect `settings.json` and `skills/` in the volume, or run `agent-sandbox reset-config` and log in again. The same applies to the `gh`, `copilot` and `vibe` volumes.
 
 ### Read-only base image
 

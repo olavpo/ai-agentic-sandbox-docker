@@ -6,7 +6,8 @@ IMAGE_NAME="agentic-sandbox:latest"
 VOLUME_PREFIX="agentic-sandbox"
 AGENT_USER="agent"   # matches USERNAME in the Dockerfile
 
-# Load .env file if present (won't override existing env vars)
+# Load .env file if present. Its values win over variables already set in the
+# calling shell: `source` assigns them unconditionally.
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
     set -a
     source "$SCRIPT_DIR/.env"
@@ -68,6 +69,11 @@ Options for `start`:
                          the host (port 5037, override with SANDBOX_ADB_PORT),
                          ADB_SERVER_SOCKET is passed in and the firewall opens
                          that single host port. See android-testing.md.
+  --writable-git-meta    Don't mount the project's .git/config and .git/hooks
+                         read-only. By default they are, because both are run
+                         by git on the HOST: an agent that could write them
+                         could run code on your machine the next time you use
+                         git in the project.
 
 Examples:
   agent-sandbox start ~/projects/my-app
@@ -123,6 +129,9 @@ prune_previous_image() {
     new_id=$(docker image inspect -f '{{.Id}}' "$IMAGE_NAME" 2>/dev/null || true)
     # Cache hit: the rebuild produced the same image, so there is nothing to drop.
     [[ "$old_id" == "$new_id" ]] && return 0
+    # Some engines (e.g. Colima's, with BuildKit) drop the untagged image on
+    # their own when the tag moves; then there is nothing left to remove.
+    docker image inspect "$old_id" >/dev/null 2>&1 || return 0
 
     # Containers still on the old image pin it — including stopped sandboxes,
     # which is why old images can legitimately survive a rebuild. `docker rmi`
@@ -204,6 +213,7 @@ cmd_start() {
     local use_devnet=true
     local use_dhis2_broker=true
     local use_adb=true
+    local protect_git_meta=true
     local agent_choice="claude"
     # Whether the agent gets general passwordless sudo in this sandbox. Strict
     # (no sudo) unless SANDBOX_ALLOW_SUDO=1 — from the environment or .env, which
@@ -226,6 +236,7 @@ cmd_start() {
             --no-config) mount_config=false; shift ;;
             --no-dhis2-broker) use_dhis2_broker=false; shift ;;
             --no-adb) use_adb=false; shift ;;
+            --writable-git-meta) protect_git_meta=false; shift ;;
             --allow-sudo) allow_sudo=1; shift ;;
             --strict-sudo|--no-strict-sudo)
                 echo "Error: $1 was removed — strict sudo is now the default." >&2
@@ -318,6 +329,37 @@ cmd_start() {
     # keys Claude Code's per-project session history (in the shared config
     # volume), so it must be unique per project — basenames alone collide.
     local volumes=(-v "$project_dir:$project_dir")
+
+    # --- Git metadata guard ---
+    # The project mount is read-write, and git on the HOST executes what is in
+    # .git/hooks and acts on .git/config (core.hooksPath, core.fsmonitor,
+    # core.sshCommand, filter/diff drivers, aliases …). An agent that could
+    # write either could run code on the host the next time the user runs git
+    # in the project — including the signing rebase the sandbox brief asks for.
+    # Mounting both read-only over the project mount closes that path while
+    # leaving commits, branches, fetch, pull and checkout working (none of
+    # them write these files). Commands that do write .git/config fail inside
+    # the sandbox instead: `git remote add`, `git branch -u`, local
+    # `git config`, and creating a branch that tracks a remote one
+    # (`git switch <remote-branch>`; `--no-track` avoids it).
+    #
+    # The hooks dir is created on the host first: if it were missing, git's
+    # default hooks path would be an agent-creatable directory.
+    #
+    # Caveat: a bind-mounted file pins its inode. Git rewrites .git/config by
+    # rename, so a `git config` run on the host is not seen inside a running
+    # sandbox until it restarts. Not covered: submodules' own git dirs under
+    # .git/modules, and worktrees (`.git` is a file; their git dir lives
+    # outside the mount, so git does not work in the sandbox anyway).
+    local git_meta_protected=""
+    if $protect_git_meta && [[ -d "$project_dir/.git" ]]; then
+        mkdir -p "$project_dir/.git/hooks"
+        volumes+=(-v "$project_dir/.git/hooks:$project_dir/.git/hooks:ro")
+        if [[ -f "$project_dir/.git/config" ]]; then
+            volumes+=(-v "$project_dir/.git/config:$project_dir/.git/config:ro")
+        fi
+        git_meta_protected=1
+    fi
 
     if $mount_config; then
         # gh config is generic (git auth); always mount it.
@@ -540,9 +582,16 @@ cmd_start() {
     [[ -n "$adb_active" ]] && echo "  Android adb: $adb_active"
     echo "  Hostname: $sandbox_hostname"
     [[ -n "$lessons_active" ]] && echo "  Lessons: $lessons_active -> /mnt/lessons (read-write)"
+    if [[ -n "$git_meta_protected" ]]; then
+        echo "  Git metadata: .git/config and .git/hooks read-only (--writable-git-meta to allow writes)"
+    fi
     [[ -n "$host_claude_md_active" ]] && echo "  CLAUDE.md addendum: $host_claude_md_active (read-only)"
 
-    docker run -dit \
+    # Create, connect every network, THEN start. init-firewall.sh allowlists
+    # each attached subnet from `ip route` once, at boot; a network connected
+    # after `docker run` races that read, and if it loses, the sibling
+    # containers on it stay blocked until the sandbox restarts.
+    docker create -it \
         --name "$container_name" \
         --hostname "$sandbox_hostname" \
         --label "agentic-sandbox=true" \
@@ -557,9 +606,10 @@ cmd_start() {
         "${volumes[@]}" \
         ${env_args[@]+"${env_args[@]}"} \
         "${extra_envs[@]+"${extra_envs[@]}"}" \
-        "$IMAGE_NAME"
+        "$IMAGE_NAME" >/dev/null
 
-    # Attach any additional networks beyond the first.
+    # Attach any additional networks beyond the first (docker create, like
+    # docker run, accepts only one --network).
     if ! $host_network && [[ ${#all_networks[@]} -gt 1 ]]; then
         for net in "${all_networks[@]:1}"; do
             docker network connect "$net" "$container_name"
@@ -567,10 +617,9 @@ cmd_start() {
         done
     fi
 
-    # Wait for the firewall before anything attaches. This deliberately comes
-    # after the extra-network attach above: init-firewall.sh reads `ip route`
-    # to allow every attached bridge subnet, so blocking earlier would give it
-    # less chance to see those networks, not more.
+    docker start "$container_name" >/dev/null
+
+    # Wait for the firewall before anything attaches.
     wait_for_firewall "$container_name"
 
     # Wait for the chosen agent to be installed. The entrypoint installs
