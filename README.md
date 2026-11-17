@@ -10,9 +10,10 @@ This repo currently uses the **Docker setup at the root** as the active path. A 
 
 - Isolated Docker containers with resource limits (8 GB RAM, 4 CPUs, 1 GB `/dev/shm` for Chromium)
 - **Egress firewall** dropping outbound traffic to anything outside an allowlist (Anthropic, GitHub, npm, pypi, dhis2.org, dev CDNs)
-- Pre-installed runtimes: Python 3 (with `uv`), Node.js 22 LTS, npm/pnpm/yarn
+- Pre-installed runtimes: Python 3 (with `uv`), Node.js 22 LTS, npm/pnpm/yarn, Go (pinned in the Dockerfile, native architecture; module downloads via `proxy.golang.org`)
 - Pre-installed Playwright + chromium with all Ubuntu 24.04 system deps; the browsers directory is agent-writable so projects can add the revision their npm Playwright pins
 - Python libraries the DHIS2 skills' scripts import (`requests`, `httpx`, `python-dotenv`, `psycopg2-binary`, `lxml`, `defusedxml`), plus `ffmpeg`, a headless Java 17 runtime and `poppler-utils`
+- Windows-installer and TPM tooling: `nsis` (`makensis`), `osslsigncode`, `p7zip`, `swtpm`/`swtpm_setup`
 - Optional language extensions: Go, Java, Rust
 - Multiple AI providers: Anthropic, OpenAI, Mistral, GitHub
 - Non-root `agent` user with no general sudo by default, so the agent cannot remove its own firewall; `--allow-sudo` opts a sandbox in, and `agent-sandbox sudo <container> on` grants it to a running one until restart
@@ -324,7 +325,6 @@ After starting a new sandbox, run `agent-sandbox sync-skills push` to populate i
 ## Language Extensions
 
 ```bash
-agent-sandbox extend extensions/go.Dockerfile
 agent-sandbox extend extensions/java.Dockerfile
 agent-sandbox extend extensions/rust.Dockerfile
 ```
@@ -397,7 +397,8 @@ The prune is deliberately scoped to this image — it never runs `docker image p
 These are properties of the design rather than bugs; know them when deciding what to run in a sandbox.
 
 - **The project tree itself is still host-executable.** The git guard above covers what git runs implicitly. It cannot cover files you run on purpose: `package.json` scripts, `Makefile`, `.envrc` (direnv), `.vscode/tasks.json`, test suites, build scripts. Review agent changes to those before running them on the host.
-- **The allowlist is by IP address, not hostname.** `init-firewall.sh` resolves each allowed domain once (and every 300 s) and allows the resulting IPs. Several allowed hosts sit on shared infrastructure — CloudFront (`releases.dhis2.org`, `docs.dhis2.org`), Google (`dl.google.com`, `maven.google.com`), `sentry.io`, and GitHub's web, API and git ranges (which serve every repo, gist and account on `github.com`, so an agent holding any token can push data to a repo of its choosing). Anything else served from the same IPs is reachable too, so a determined agent can still reach attacker-controlled content or exfiltrate data through those providers. The firewall stops accidental and casual egress and makes injected-prompt exfiltration much harder; it is not an airtight data boundary. Closing that gap would need an HTTPS proxy that filters on SNI/hostname.
+- **The allowlist is by IP address, not hostname.** `init-firewall.sh` resolves each allowed domain once (and every 300 s) and allows the resulting IPs. Several allowed hosts sit on shared infrastructure — CloudFront (`releases.dhis2.org`, `docs.dhis2.org`), Google (`dl.google.com`, `maven.google.com`, `proxy.golang.org`, `sum.golang.org`, and `storage.googleapis.com`, which the Go proxy redirects to and which serves every Google Cloud Storage bucket, so a signed upload URL is an open exfiltration path), `sentry.io`, and GitHub's web, API and git ranges (which serve every repo, gist and account on `github.com`, so an agent holding any token can push data to a repo of its choosing). Anything else served from the same IPs is reachable too, so a determined agent can still reach attacker-controlled content or exfiltrate data through those providers. The firewall stops accidental and casual egress and makes injected-prompt exfiltration much harder; it is not an airtight data boundary. Closing that gap would need an HTTPS proxy that filters on SNI/hostname.
+- **No Docker access, on purpose.** Mounting the Docker socket would hand the agent root on the Docker VM and the ability to start containers outside the egress firewall (including `docker build` steps, whose `RUN`s get unfiltered network). Build and test images on the host; for a DHIS2 instance, use the broker.
 - **DNS lookups are forwarded upstream.** DNS is pinned to the container's own resolver, but that resolver is recursive, so data can still leave encoded in lookups of an attacker's domain (see "Networking and host-visible ports").
 - **Config volumes are shared across sandboxes.** Every claude sandbox mounts the same `agentic-sandbox-claude` volume at `~/.claude` — that is what makes "log in once" work. It also means an agent in one project can change what agents in every other project run: `settings.json` (including hooks, which execute commands), `CLAUDE.md`, installed skills and plugins, and the stored OAuth credentials. A prompt injection picked up in one repo can therefore persist into the others. The entrypoint rewrites only its own marked block of `CLAUDE.md` on each boot; nothing resets the rest. If a sandbox may have been exposed to hostile content, inspect `settings.json` and `skills/` in the volume, or run `agent-sandbox reset-config` and log in again. The same applies to the `gh`, `copilot` and `vibe` volumes.
 

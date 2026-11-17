@@ -108,6 +108,16 @@ DOMAINS=(
     "plugins.gradle.org"
     "plugins-artifacts.gradle.org"
 
+    # Go module proxy and checksum database. Toolchain downloads requested by
+    # a go.mod (GOTOOLCHAIN=auto) also come through the proxy; modules not on
+    # the proxy fall back to their VCS (GitHub is covered below).
+    # The proxy serves large zips (toolchains, big modules) by redirecting to a
+    # signed storage.googleapis.com URL, so that host is needed too. It is all
+    # of Google Cloud Storage, though: see README "Known limits".
+    "proxy.golang.org"
+    "sum.golang.org"
+    "storage.googleapis.com"
+
     # DuckDB extension repositories
     "extensions.duckdb.org"
     "community-extensions.duckdb.org"

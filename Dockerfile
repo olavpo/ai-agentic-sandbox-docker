@@ -90,6 +90,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zip \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Build/test tooling for projects that ship a Windows installer and use a TPM:
+# swtpm (+ swtpm_setup) is a software TPM for TPM-backed tests; nsis
+# (makensis), osslsigncode and p7zip build, sign/verify and unpack Windows
+# installers. Kept as its own layer so the base tools above stay cached.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nsis \
+    osslsigncode \
+    p7zip-full \
+    swtpm \
+    swtpm-tools \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Go, for the native architecture (arm64 on Apple Silicon). Bump with
+# --build-arg GO_VERSION=1.x.y. A go.mod that asks for a newer toolchain gets it
+# automatically (GOTOOLCHAIN=auto) through proxy.golang.org / sum.golang.org,
+# which init-firewall.sh allows, so this pin only needs to be roughly current.
+# (Downloaded from dl.google.com rather than go.dev, which is not reachable
+# from every network.)
+ARG TARGETARCH
+ARG GO_VERSION=1.27.4
+RUN curl -fsSL "https://dl.google.com/go/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz" \
+       | tar -C /usr/local -xz \
+    && /usr/local/go/bin/go version
+ENV PATH="/usr/local/go/bin:${PATH}"
+
 # Python (system + pip)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
@@ -164,7 +189,7 @@ USER $USERNAME
 # Install uv (Python package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
-ENV PATH="/home/$USERNAME/.local/bin:/home/$USERNAME/.npm-global/bin:${PATH}"
+ENV PATH="/home/$USERNAME/.local/bin:/home/$USERNAME/.npm-global/bin:/home/$USERNAME/go/bin:${PATH}"
 
 SHELL ["/bin/bash", "-c"]
 
