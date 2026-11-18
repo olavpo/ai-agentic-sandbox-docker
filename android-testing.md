@@ -125,6 +125,11 @@ cat > ~/Library/LaunchAgents/local.adb-server.plist <<'EOF'
         <string>server</string>
         <string>nodaemon</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ADB_MDNS</key>
+        <string>0</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -137,6 +142,16 @@ EOF
 launchctl load -w ~/Library/LaunchAgents/local.adb-server.plist
 adb devices    # should print an (empty) device list without errors
 ```
+
+`ADB_MDNS=0` turns off adb's mDNS (wireless-debugging discovery). With
+platform-tools 37.0.1 on macOS 27 the server otherwise aborts in its mDNS
+thread about 10 s after start, and launchd restarts it in a loop: every
+`adb` call then prints "daemon not running; starting now", the emulator never
+shows up, and `~/Library/Logs/DiagnosticReports/adb-*.ips` fills with
+`abort() called`. Also put `export ADB_MDNS=0` in your shell profile so an
+`adb` that auto-starts its own server doesn't hit the same crash. Wireless
+debugging (`adb pair`) is unavailable while it is set; USB and the emulator
+work normally.
 
 ## 4. Get the APK
 
