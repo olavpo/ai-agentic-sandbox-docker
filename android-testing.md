@@ -35,15 +35,17 @@ below is the **one-time host setup**.
 
 ## 1. Install the emulator and a system image
 
-`sdkmanager`/`avdmanager` are already installed via Homebrew
-(`android-commandlinetools`), with the SDK root at
-`/opt/homebrew/share/android-commandlinetools`. Platform-tools (adb) and
-build-tools are already there too; what's missing is the emulator and a
-system image (~2–3 GB download):
+The Android command-line tools (`sdkmanager`, `avdmanager`) come from
+Homebrew and need a Java runtime (17 or newer) first. Temurin, the Eclipse
+Adoptium build of OpenJDK, is the usual free choice; take an LTS release.
+The SDK root ends up at `/opt/homebrew/share/android-commandlinetools`.
+Then install adb, the emulator and a system image (~3 GB download):
 
 ```bash
-sdkmanager --licenses     # accept once
-sdkmanager "emulator" "system-images;android-34;google_apis;arm64-v8a"
+brew install --cask temurin@25              # Java (LTS); `brew search temurin` lists versions
+brew install --cask android-commandlinetools
+sdkmanager --licenses                       # accept once
+sdkmanager "platform-tools" "emulator" "system-images;android-34;google_apis;arm64-v8a"
 ```
 
 Use an `arm64-v8a` image — on Apple Silicon it runs near-native speed;
@@ -64,6 +66,12 @@ avdmanager create avd -n dhis2-test \
   -k "system-images;android-34;google_apis;arm64-v8a" \
   -d medium_phone
 ```
+
+Command-line tools 22.0 print `Error: Could not load devices from
+.../arm64-v8a/devices.xml` here. It is harmless: that file is optional and
+this system image doesn't ship one, and the AVD is still created in full
+(`~/.android/avd/dhis2-test.avd/config.ini` exists and names the image in
+`image.sysdir.1`). Don't re-run with `--force`; carry on with the config fix.
 
 The AVD mimics a budget phone common in DHIS2 countries (Tecno/Infinix/itel
 class): 720×1600 at 320 dpi, 2 cores. The screen and core count are set in
